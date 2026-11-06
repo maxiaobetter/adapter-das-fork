@@ -568,7 +568,7 @@ REGISTRY = {
 }
 
 
-def resolve(name):
+def resolve(name, *, evaluate_auto=True):
     """-> (value, source) where source in {'explicit','auto','default'}.
 
     The returned value is the EFFECTIVE setting as a string ('1'/'0'/''
@@ -593,6 +593,8 @@ def resolve(name):
     auto_hosts = spec.get("auto_hosts")
     active_host = os.environ.get("_HCU_ADAPTER_ACTIVE_HOST")
     if "auto" in spec and (auto_hosts is None or active_host in (None, "none") or active_host in auto_hosts):
+        if not evaluate_auto:
+            return "pending", "auto-deferred"
         try:
             v = spec["auto"]()
             if v is not None:
@@ -609,7 +611,7 @@ def enabled(name):
 
 
 def log_summary():
-    """Startup lines: config file in effect + every resolved var + source."""
+    """Report configuration without executing device-dependent auto rules."""
     from . import hcu_config as _cfg
 
     cfg_line = _cfg.summary_line()
@@ -617,7 +619,7 @@ def log_summary():
         LOG.warning(cfg_line)
     parts = []
     for name in REGISTRY:
-        v, src = resolve(name)
+        v, src = resolve(name, evaluate_auto=False)
         if v in ("", "0"):
             continue  # keep the line short: only non-default-effective vars
         parts.append(f"{name}={v}({src})")

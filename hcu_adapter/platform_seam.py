@@ -45,6 +45,67 @@ _TARGETS = (
 )
 
 
+def _defer_external_event_override(replacement):
+    """Patch the event factory when imported, without loading the model stack.
+
+    Importing shared_read_event during sitecustomize pulls in parallel_state,
+    whose hardware probes can create a GPU context before worker device binding.
+    Apply the same factory override after its normal import instead.
+    """
+    import importlib.abc
+    import sys
+
+    target = "sglang.srt.model_executor.runner_utils.shared_read_event"
+    module = sys.modules.get(target)
+    if module is not None:
+        module.make_external_event = replacement
+        return
+
+    for finder in sys.meta_path:
+        if getattr(finder, "_hcu_external_event_target", None) == target:
+            finder.replacement = replacement
+            return
+
+    class EventLoader(importlib.abc.Loader):
+        def __init__(self, loader, finder):
+            self.loader = loader
+            self.finder = finder
+
+        def create_module(self, spec):
+            return self.loader.create_module(spec)
+
+        def exec_module(self, module):
+            self.loader.exec_module(module)
+            module.make_external_event = self.finder.replacement
+            if self.finder in sys.meta_path:
+                sys.meta_path.remove(self.finder)
+
+        def __getattr__(self, name):
+            return getattr(self.loader, name)
+
+    class EventFinder(importlib.abc.MetaPathFinder):
+        _hcu_external_event_target = target
+
+        def __init__(self):
+            self.replacement = replacement
+
+        def find_spec(self, fullname, path=None, target_module=None):
+            if fullname != target:
+                return None
+            # Preserve any framework/custom finder rather than bypassing it.
+            for finder in tuple(sys.meta_path):
+                if finder is self:
+                    continue
+                spec = finder.find_spec(fullname, path, target_module)
+                if spec is not None:
+                    if spec.loader is not None:
+                        spec.loader = EventLoader(spec.loader, self)
+                    return spec
+            return None
+
+    sys.meta_path.insert(0, EventFinder())
+
+
 def _install_gfx_probe_guard(_common):
     """Neutralize is_gfx*_supported arch probes.
 
@@ -209,14 +270,7 @@ def install():
     def _hcu_make_external_event(device_module):
         return None
 
-    try:
-        from sglang.srt.model_executor.runner_utils import (
-            shared_read_event as _sre,
-        )
-
-        _sre.make_external_event = _hcu_make_external_event
-    except Exception:
-        pass
+    _defer_external_event_override(_hcu_make_external_event)
 
     _common.is_cuda = _hcu_is_cuda
     _common.is_hip = _hcu_is_hip
