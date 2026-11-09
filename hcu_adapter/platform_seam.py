@@ -321,15 +321,6 @@ def install():
     def _hcu_make_external_event(device_module):
         return None
 
-    try:
-        from sglang.srt.model_executor.runner_utils import (
-            shared_read_event as _sre,
-        )
-
-        _sre.make_external_event = _hcu_make_external_event
-    except Exception:
-        pass
-
     _common.is_cuda = _hcu_is_cuda
     _common.is_hip = _hcu_is_hip
     _common.is_cuda_alike = _hcu_is_cuda_alike
@@ -406,6 +397,31 @@ def install():
     for _n, _fn in _sync.items():
         if getattr(_pkg_utils, _n, None) is not _fn:
             setattr(_pkg_utils, _n, _fn)
+
+    # runner_utils imports DeepEP and quantization before shared_read_event.
+    # Install both predicate namespaces and hardware guards before that import.
+    try:
+        from sglang.srt.model_executor.runner_utils import (
+            shared_read_event as _sre,
+        )
+
+        _sre.make_external_event = _hcu_make_external_event
+    except Exception:
+        LOG.warning("HCU adapter: shared-read event seam not installed", exc_info=True)
+
+    import sys
+
+    _dsa_utils = sys.modules.get("sglang.srt.layers.attention.dsa.utils")
+    if _dsa_utils is not None:
+        for _n in ("is_cuda", "is_hip"):
+            setattr(_dsa_utils, _n, _sync[_n])
+            registry.register(
+                "platform_detect",
+                _sync[_n],
+                target=f"sglang.srt.layers.attention.dsa.utils:{_n}",
+                mechanism=registry.MECH_SEAM,
+                detail="sync early-imported DSA platform predicates",
+            )
     LOG.warning(
         "HCU adapter: platform semantics seam installed "
         "(sglang answers CUDA; hw layers stay HIP-truthful)"

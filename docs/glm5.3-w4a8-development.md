@@ -262,3 +262,51 @@ P25/P26 的只读观测保持四份 P/D 响应与未加观测的 P24 精确一�
 实际 DTK26.10 启动日志仍出现 `get_device_memory_capacity → get_nvgpu_memory_capacity → nvidia-smi 缺失 → torch.cuda.mem_get_info`。此前主进程无额外 scheduler queue 的观测不能排除这条 PyTorch 初始化路径。禁止 lazy-init 的 main 组合探针已在同一调用处报错；这不是 INT8 KV 预算方法的错误。
 
 本轮将 CUDA facade 下的容量查询接到已加载 HIP runtime 的 `hipDeviceTotalMem`，按可见 HIP ordinal 查询并取整 MiB 的最小值，保持上游容量选择语义。同步 common 和 utils 出口，不改框架文件，也不调用空闲显存接口。既有日志容量为每卡 65520 MiB；新接口数值、无初始化与新服务 context 状态待单独核验。当前正在运行的 GPQA 服务未修改，不能把该评测归为包含此新增修复。
+
+
+## 2026-11-08：TopK mask 的 JIT 设备枚举兼容（验证中）
+
+隔离的官方框架 `baa9befa381511cd4d56f83980951e5a45fffc6d`、adapter `54667d9` 与 plugin PR #24 加局部兼容补丁，在 prefill 模型前向调用 `mask_topk_ids` 时，被 `hash_topk.cuh` 中 `num_token_non_padded` 的 CUDA-only 设备判断拒绝。实际 JIT 编译命令使用 HIP 编译器、`USE_ROCM` 与 gfx936；框架公共 `utils.cuh` 已提供按编译平台选择 CUDA/ROCm 的 `kDLGPU`。
+
+本候选保留 adapter 的 `is_cuda=True / is_hip=False` 上游分发语义，在现有 `jit_dpskmeta` 的私有编译输入变换中，将该入口的一处 `ntn_dev == kDLCUDA` 替换为 `ntn_dev == kDLGPU`，并登记精确原文白名单。CPU int32/int64 标量路径、设备 int32 要求、输入 shape/stride、指针读取、mask kernel 和 -1 padding 规则均保留。没有修改社区源码、已有不可变 JIT bundle、插件平台变量或量化策略。
+
+归属依据：这是已有 CUDA mask API 的设备 ABI 兼容；直接调用其他 kernel 或切到 HIP 算法会改变分发，无法解决当前入口自身的设备判断。变换依附现有编译输入管理流程，不新增独立 installer 或重复包装层。缺少旧设备判断且缺少对应设备分支的旧资产不应用本项；分支仍在而判断发生未知变化时按既有规则报错。
+
+本地已核对真实失败 JIT 输入只改变一处判断，反向替换逐字节恢复原文，重复应用不改变结果；CI Ruff 致命项、语法、diff 和 L0 检查通过，L0 既有 31 项环境变量告警保留。公开 API 已在 gfx936 实机通过设备 int32、CPU int32/int64 三种计数输入的精确输出检查，并通过两次更换输入和有效行数的 Graph 重放；运行时仍为 `is_cuda=True / is_hip=False`。实际 JIT 共享库和构建文件哈希已绑定，执行版本与当前候选的 Python AST 一致（仅基线说明注释有文字差异）。这些检查使用合成整数输入；模型实际输入对拍及完整调用链仍未完成，不以本节证明完整适配或精度验收。未新增单测，未重复实现 plugin #25 或 adapter #61。
+
+
+## 2026-11-09：DSA CP metadata 的平台绑定回归修复
+
+同步候选在 GPQA 首个 178-token 请求触发 `logits.shape[0] == len(seq_lens_expanded)`：PP0 全部八个 CP rank 的 Q 为 `[24,32,128]`、logits 为 `[24,178]`，但 expanded lengths 和 ks/ke 仍各有 178 行。runner 与 plugin 的 CP 激活均为 True，DSA metadata 分片开关却为 False。实际 CP logical rows 为 `[23,23,22,22,22,22,22,22]`，physical rows 为八个 24。
+
+同一部署解释器中，公共 utils/common 已切到 CUDA facade，但提前加载的 `attention.dsa.utils` 保留旧 `is_hip=True / is_cuda=False` 绑定。其 DSA CP 判断在 HIP 分支只允许 DeepSeek V4，拒绝当前 GLM。以实际 checkpoint config 和 CP8 对照原函数，仅替换隔离副本的平台函数绑定即可使返回值从 False 变为 True。既有 CP Hook 对已导入函数别名的传播正常，不是本次故障来源。
+
+最小修改在 `platform_seam.install` 同步已加载 DSA 模块的两个平台判断，并逐项登记运行时 seam；未加载时由后续 import 获取公共 facade。保持 `is_cuda=True / is_hip=False`、真实 HIP 硬件信息、W4A8 与 INT8 activation、CP 分片算法及所有设备内核不变。没有写回框架或 vendor 源码，没有新增单测。原有未提交 TopK 兼容修改保留。
+
+当前验证范围：失败现场和隔离 predicate 对照已完成；修复后新解释器/spawn、原请求、prefill/decode/MTP/graph 的算子对照、性能与 GPQA/HMMT/HumanEval 精度正在验证，不能据此标为已恢复。
+
+
+## 2026-11-09 Cookbook 形式的独立 P/D 命令
+
+按用户要求将 `examples/glm5.3-w4a8/pd/prefill.sh` 和 `decode.sh` 整理为各自
+独立的 export 与启动命令；不使用公共 shell、adapter YAML、路径计算、参数解析
+或 exec，不写死网卡、网口与节点 IP。顶部保留必要的 W4A8、LightOp、index-K
+及角色选择，已有默认值不重复设置；不把删除 export 当作默认值迁移完成。
+本次精简去掉 P 的紧凑 Index-K 广播 `=1`（plugin 默认已为 1），以及 P/D 的
+`SGLANG_LIGHTOP_TOPK=1`（当前 GLM 路径的 `SGLANG_USE_LIGHTOP=1` 已选择同一分支）。
+其余非默认开关、预取 stream 选择和八项 runtime 设置保留。
+
+本轮曾尝试新增早期配置 provider 与 UI 接线，用户明确要求收回到脚本整理范围后，
+已完整撤回这些新增机制；此前运行修复与其他未提交改动保留。plugin 运行时代码、
+adapter bootstrap、配置 schema 和 UI 本轮均无新增修改，未提交、推送或创建 PR。
+
+保持 P 的 PP2/CP8、D 的 TP16/DP16/EP16、P=0.8/D=0.858、W4A8、INT8 激活与
+EAGLE 5/1/6；ModelScope ID 为 `hygon/GLM-5.3-Channel-INT4-w4a8`，公开配置
+已核对。命令格式参考 cookbook `7e8ce3c07d60926fbe86c29d923411a631b8dfaf`；
+性能、精度参照 sglang-das 0.5.18。两份脚本已补回原配方的八项 GLIBC/HIP/HSA
+runtime 设置，两个服务超时继续保留，不再假定尚未构建的镜像已承载这些值。
+Ninja、驱动/动态库、缓存目录及部署专属网络参数仍需准备及核验。
+
+检查范围为 shell 语法、CI 等价 lint、结构检查和 diff。未新增单测或修改算子数学。
+官方 `release/v0.5.22` 工作区保持干净。节点当前不可达，未部署新脚本与新组合，
+未将完整调用链对齐、服务启动、自动 IB 发现、数据集精度或性能记为通过。
