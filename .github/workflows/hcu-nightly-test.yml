@@ -58,7 +58,7 @@ jobs:
           # 手动触发是所选分支。l15/l2 用同一个表达式，保证镜像和被测代码同源
           ref: ${{ inputs.ref || github.ref }}
           persist-credentials: false
-          
+
       - name: Read ci/ci_docker_image
         id: read
         run: |
@@ -74,7 +74,7 @@ jobs:
           esac
           echo "用镜像: $image"
           echo "image=$image" >> "$GITHUB_OUTPUT"
-      
+
   l15:
     name: L1.5 upstream gate (bw1100-1card)
     needs: [image]

@@ -47,7 +47,7 @@ jobs:
           # 镜像属于基础设施，取基线分支的版本：PR 里改 ci/ci_docker_image 不会影响本次运行（要试新镜像就合入基线）
           ref: ${{ github.event.pull_request.base.ref || github.ref }}
           persist-credentials: false
-          
+
       - name: Read ci/ci_docker_image
         id: read
         run: |
