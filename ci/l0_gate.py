@@ -29,6 +29,7 @@ Exit:   0 green / 1 red; per-check PASS/FAIL lines go to stdout.
 import argparse
 import ast
 import os
+from pathlib import Path
 import re
 import sys
 
@@ -425,7 +426,109 @@ def check_impl_naming(r):
         r.fail("impl-naming", f"tier-matrix check crashed: {exc}")
 
 
+def check_dual_dist_packaging(r):
+    """HARD: dual-dist layout invariants (governance §7.4).
+
+    sgl-kernel (root pyproject) is a pure shadow kernel: no sitecustomize
+    py-module, no entry-points, packages limited to sgl_kernel*. hcu-adapter
+    (packaging/hcu-adapter) owns sitecustomize + the vllm entry-points and
+    interlocks the kernel dist at build time: its setup.py/_pin.py renders
+    sgl-kernel==<public>[+hcu.<stamp>] from the single kernel version source
+    (sgl_kernel/version.py), and build.sh passes one DAS_BUILD_STAMP to both
+    wheels. Without a stamp the pin names the public kernel version only.
+    The adapter base dependencies also carry the validated torch/triton pins
+    so a plain adapter install cannot drift to the newest nightly stack.
+    Versions are independent lines; only the pin is machine-checked.
+    """
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # py3.9/3.10 gate environments
+        import tomli as tomllib
+
+    root_pp = tomllib.loads((Path(ROOT) / "pyproject.toml").read_text(encoding="utf-8"))
+    adapter_pp_path = Path(ROOT) / "packaging" / "hcu-adapter" / "pyproject.toml"
+    adapter_pp = tomllib.loads(adapter_pp_path.read_text(encoding="utf-8"))
+
+    kernel_project = root_pp["project"]
+    if "entry-points" in kernel_project:
+        r.fail("dual-dist", "root pyproject must not declare entry-points "
+               "(they live in hcu-adapter)")
+    if "sitecustomize" in root_pp.get("tool", {}).get("setuptools", {}).get(
+            "py-modules", []):
+        r.fail("dual-dist", "sitecustomize ships with hcu-adapter, not the "
+               "kernel dist")
+    include = root_pp.get("tool", {}).get("setuptools", {}).get(
+        "packages", {}).get("find", {}).get("include")
+    if include != ["sgl_kernel*"]:
+        r.fail("dual-dist", f"kernel dist packages.find.include must be "
+               f"['sgl_kernel*'], got {include!r}")
+
+    version_src = (Path(ROOT) / "sgl_kernel" / "version.py").read_text(encoding="utf-8")
+    m = re.search(r'^__version__ = "(.+?)"$', version_src, re.M)
+    if not m:
+        r.fail("dual-dist", "sgl_kernel/version.py lacks __version__")
+        return
+    kernel_version = m.group(1)
+    public_version = kernel_version.split("+", 1)[0]
+
+    adapter_project = adapter_pp["project"]
+    dynamic = adapter_project.get("dynamic") or []
+    if "dependencies" not in dynamic or "version" not in dynamic:
+        r.fail("dual-dist", "hcu-adapter version/dependencies must be dynamic "
+               "(rendered by setup.py/_pin.py at build time)")
+    try:
+        import importlib.util
+        pin_file = adapter_pp_path.parent / "_pin.py"
+        spec = importlib.util.spec_from_file_location("hcu_adapter_build_pin", pin_file)
+        pin_mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pin_mod)
+        pin = pin_mod.kernel_pin(stamp="")
+    except Exception as exc:
+        r.fail("dual-dist", f"cannot evaluate hcu-adapter interlock pin: {exc}")
+    else:
+        if pin != f"sgl-kernel=={public_version}":
+            r.fail("dual-dist",
+                   f"hcu-adapter interlock pin must be "
+                   f"'sgl-kernel=={public_version}', got {pin!r}")
+    if adapter_project.get("entry-points", {}).get("vllm.platform_plugins") != {
+            "hcu_adapter": "hcu_adapter.bridges.vllm:hcu_platform_plugin"}:
+        r.fail("dual-dist", "hcu-adapter vllm.platform_plugins entry-point "
+               "drifted (zero-change migration rule)")
+    if adapter_project.get("entry-points", {}).get("vllm.general_plugins") != {
+            "hcu_adapter": "hcu_adapter.bridges.vllm:hcu_runtime_plugin"}:
+        r.fail("dual-dist", "hcu-adapter vllm.general_plugins entry-point "
+               "drifted (zero-change rule)")
+    if "sitecustomize" not in adapter_pp.get("tool", {}).get(
+            "setuptools", {}).get("py-modules", []):
+        r.fail("dual-dist", "hcu-adapter must ship sitecustomize (py-modules)")
+
+    # Docker layering split: hcu-runtime composes the subgroups by self-reference.
+    extras = adapter_project.get("optional-dependencies") or {}
+    runtime_groups = (
+        "hcu-runtime-kernels",
+        "hcu-runtime-serve",
+        "hcu-runtime-aux",
+    )
+    missing_groups = [g for g in runtime_groups if g not in extras]
+    if missing_groups:
+        r.fail("dual-dist", f"hcu-runtime subgroups missing: {missing_groups}")
+    else:
+        expected = {f"hcu-adapter[{g}]" for g in runtime_groups}
+        actual = set(extras.get("hcu-runtime") or [])
+        if actual != expected:
+            r.fail("dual-dist",
+                   "hcu-runtime must compose hcu-runtime-kernels/serve/aux "
+                   f"by self-reference; missing={sorted(expected - actual)} "
+                   f"extra={sorted(actual - expected)}")
+
+    adapter_version_file = adapter_pp_path.parent / "VERSION"
+    if not adapter_version_file.read_text(encoding="utf-8").strip():
+        r.fail("dual-dist", "packaging/hcu-adapter/VERSION is empty "
+               "(adapter dist version single source)")
+
+
 # ---------------------------------------------------------------------------
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -450,6 +553,7 @@ def main():
     check_text_patch_allowlist(r)
     check_registry_ops_in_catalog(r)
     check_impl_naming(r)
+    check_dual_dist_packaging(r)
 
     print(f"l0 gate: scanned {n_py} py / {n_sh} sh / {n_sec} text files")
     for w in r.warns:

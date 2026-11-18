@@ -41,7 +41,7 @@ def _resolve_rms_impl():
             from hcu_adapter import hcu_env
 
             impl, _src = hcu_env.resolve("HCU_RMS_NORM_IMPL")
-            if impl in ("triton", "aiter", "lightop", "torch"):
+            if impl in ("triton", "aiter", "lightop", "lightop_opt", "torch"):
                 _RMS_IMPL = impl
         except Exception:
             import traceback
@@ -62,6 +62,7 @@ def _resolve_fused_add_impl():
     global _FUSED_ADD_IMPL, _LIGHTOP_FUSED_ADD
     if _FUSED_ADD_IMPL is None:
         _FUSED_ADD_IMPL = "triton"
+        impl = None
         try:
             from hcu_adapter import hcu_env
 
@@ -71,9 +72,17 @@ def _resolve_fused_add_impl():
 
                 _LIGHTOP_FUSED_ADD = (fused_add_rms_norm, gemma_fused_add_rmsnorm)
                 _FUSED_ADD_IMPL = "lightop"
+            elif impl == "lightop_opt":
+                from lightop import gemma_fused_add_rmsnorm, op
+
+                _LIGHTOP_FUSED_ADD = (op.fused_add_rms_norm_opt, gemma_fused_add_rmsnorm)
+                _FUSED_ADD_IMPL = "lightop_opt"
             elif impl in ("triton", "torch"):
                 _FUSED_ADD_IMPL = impl
         except Exception:
+            if impl == "lightop_opt":
+                _FUSED_ADD_IMPL = None
+                raise
             # visibility beats silence: a silent vendor-probe failure reads
             # as "auto mode" and hides a real wheel/env problem.
             import traceback
@@ -109,6 +118,8 @@ def _try_lightop_fused_add(input, residual, weight, eps, gemma):
            weight, eps)
         return True
     except Exception:
+        if _FUSED_ADD_IMPL == "lightop_opt":
+            raise
         import traceback
 
         traceback.print_exc()
@@ -144,7 +155,10 @@ def _lightop_rmsnorm(input, weight, eps, out):
         return out
     x = input.contiguous().view(-1, input.shape[-1])
     y = out.contiguous().view_as(x)
-    lightop.rms_norm(x, weight.contiguous(), eps, out=y)
+    if _RMS_IMPL == "lightop_opt":
+        lightop.op.rms_norm_opt(y, x, weight.contiguous(), eps)
+    else:
+        lightop.rms_norm(x, weight.contiguous(), eps, out=y)
     if y.data_ptr() != out.data_ptr():
         out.copy_(y.view_as(out))
     return out
@@ -214,14 +228,15 @@ if HAS_TRITON:
         for off in range(0, N, BLOCK):
             cols = off + tl.arange(0, BLOCK)
             mask = cols < N
-            # Keep the FP32 sum for both variance and normalization. Storing
-            # residual in the first pass would round it before this reload.
+            # Default community fused-add uses the FP32 sum for variance but
+            # the activation-dtype residual for the normalization numerator.
             x = tl.load(x_row + cols, mask=mask, other=0.0).to(tl.float32)
             r = tl.load(res_row + cols, mask=mask, other=0.0).to(tl.float32)
             t = x + r
+            stored = t.to(RES.dtype.element_ty)
             w = tl.load(W + cols, mask=mask, other=0.0).to(tl.float32)
-            y = t * rstd * (w + d2f)
-            tl.store(res_row + cols, t.to(RES.dtype.element_ty), mask=mask)
+            y = stored.to(tl.float32) * rstd * (w + d2f)
+            tl.store(res_row + cols, stored, mask=mask)
             tl.store(x_row + cols, y.to(X.dtype.element_ty), mask=mask)
 
 
@@ -266,7 +281,7 @@ def _do_rmsnorm(
         impl = "triton"  # vendor backend covers the plain norm only
     if impl == "torch" or not input.is_cuda:
         return _rmsnorm_native(input, weight, eps, gemma, out)
-    if impl == "lightop":
+    if impl in ("lightop", "lightop_opt"):
         # Only the BF16 plain-norm contract has been qualified with this provider.
         # Other dtypes and Gemma retain the existing Triton implementation.
         if input.dtype == weight.dtype == out.dtype == torch.bfloat16:
@@ -343,7 +358,9 @@ def _do_fused_add(
     gemma: bool,
 ) -> None:
     impl = _resolve_fused_add_impl()
-    if impl == "lightop" and _try_lightop_fused_add(input, residual, weight, eps, gemma):
+    if impl in ("lightop", "lightop_opt") and _try_lightop_fused_add(
+        input, residual, weight, eps, gemma
+    ):
         return
     use_triton = (
         impl != "torch"

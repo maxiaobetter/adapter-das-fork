@@ -94,6 +94,21 @@ def _auto_quant_impl():
     return "stock"
 
 
+def has_aiter_custom_allreduce():
+    """Check the wheel layout without importing GPU code during sitecustomize."""
+    try:
+        from importlib.util import find_spec
+        from pathlib import Path
+
+        spec = find_spec("aiter")
+        return bool(spec and spec.submodule_search_locations and any(
+            (Path(root) / "dist" / "device_communicators" / "custom_all_reduce.py").is_file()
+            for root in spec.submodule_search_locations
+        ))
+    except (ImportError, OSError, ValueError):
+        return False
+
+
 def _auto_ar_norm_impl():
     # fused AR+RMSNorm rides the SAME aiter GraphSafe communicator the
     # plain AR auto-rule already vets: refuse wherever HCU_AITER_AR
@@ -103,10 +118,9 @@ def _auto_ar_norm_impl():
 
         if getattr(torch.version, "hip", None) is None:
             return "stock"
-        from aiter.dist.device_communicators.custom_all_reduce import (  # noqa: F401
-            CustomAllreduce,
-        )
     except Exception:
+        return "stock"
+    if not has_aiter_custom_allreduce():
         return "stock"
     if _auto_aiter_ar().startswith("refused"):
         return "stock"
@@ -246,6 +260,24 @@ REGISTRY = {
                  "关融合不是绕法（mapper 后的组 targets 只认融合名）；"
                  "=0 跳过安装。",
     },
+    "HCU_FLASHMLA_SPARSE_CHUNK_MB": {
+        "env": "HCU_FLASHMLA_SPARSE_CHUNK_MB", "default": "512",
+        "about": "sparse FlashMLA emu（sgl_kernel/flash_mla_sparse.py）按 s_q "
+                 "分块的 fp32 工作集预算（MiB）：整块 gather+scores 在 8k "
+                 "prefill chunk 上要 34 GiB 并在 prefill graph 捕获期 OOM"
+                 "（S1 Hy4 2026-11-03）；行间独立，分块数值不变",
+    },
+    "HCU_HYV4_CT_SCALE": {
+        "env": "HCU_HYV4_CT_SCALE", "default": "1",
+        "about": "HYV4 CT-int8 scale 命名运行时兼容（hyv4_ct_scale_patch.py）："
+                 "v0522 hunyuan_v4(_nextn).py load_weights 无条件把 .weight_"
+                 "scale 改名 .weight_scale_inv（fp8 block 命名），CT W8A8Int8/"
+                 "WNA16 参数叫 .weight_scale → Hy4 Channel-INT4-w4a8 加载期 "
+                 "KeyError(shared_experts.gate_up_proj.weight_scale_inv，S1 "
+                 "2026-11-03)。HYV4 类内 do_load_weights 包装：模型无 *_inv "
+                 "参数时去掉社区追加的 _inv 再交原 mixin；不读写社区源码。"
+                 "上游各平台同病；=0 跳过安装",
+    },
     # custom all-reduce
     "HCU_AITER_AR": {
         "env": "HCU_AITER_AR", "default": "0",
@@ -266,6 +298,10 @@ REGISTRY = {
     "VLLM_ROCM_USE_AITER_CUSTOM_AR": {
         "env": "VLLM_ROCM_USE_AITER_CUSTOM_AR", "default": "1", "hosts": ("vllm",),
         "about": "Official AR child switch; 0 vetoes HCU_AITER_AR opt-in, without enabling global AITER",
+    },
+    "VLLM_MOE_SKIP_PADDING": {
+        "env": "VLLM_MOE_SKIP_PADDING", "default": "1", "hosts": ("vllm",),
+        "about": "Official skip sentinel; HCU unquantized AITER normalizes to 0 before workers spawn",
     },
     "AITER_AR_MAX_SIZE_MB": {
         "env": "AITER_AR_MAX_SIZE_MB", "default": "64", "hosts": ("vllm",),
@@ -449,7 +485,8 @@ REGISTRY = {
     },
     "HCU_RMS_NORM_IMPL": {
         "env": "HCU_RMS_NORM_IMPL", "default": "triton",
-        "about": "rms_norm 后端档位：triton|aiter(rmsnorm_forward 桥)|lightop|torch；"
+        "about": "rms_norm 后端档位：triton|aiter(rmsnorm_forward 桥)|lightop|lightop_opt|torch；"
+                 "lightop_opt=op.rms_norm_opt，decode 数值/graph 待验证；"
                  "lightop 仅覆盖 BF16 plain RMSNorm，其他 dtype 使用 triton；"
                  "仅管 plain rmsnorm，fused_add/gemma 变体见 "
                  "HCU_FUSED_ADD_RMS_IMPL",
@@ -457,7 +494,8 @@ REGISTRY = {
     "HCU_FUSED_ADD_RMS_IMPL": {
         "env": "HCU_FUSED_ADD_RMS_IMPL", "default": "auto",
         "about": "fused_add_rmsnorm/gemma 变体后端档位：auto=triton（lightop "
-                 "过验证后转正），triton|lightop|torch；lightop="
+                 "过验证后转正），triton|lightop|lightop_opt|torch；"
+                 "lightop_opt=op.fused_add_rms_norm_opt，异常直接抛出，数值/graph 待验证；lightop="
                  "lightop.fused_add_rms_norm/gemma_fused_add_rmsnorm 原地核"
                  "（fp32 累加、末端舍入，同 triton 数值契约；一次异常即降级 "
                  "triton）",

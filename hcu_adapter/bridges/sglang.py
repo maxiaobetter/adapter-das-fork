@@ -1837,6 +1837,7 @@ def install() -> None:
                         x_scales=None,
                         round_scale=False,
                         use_ue8m0=False,
+                        quant_group_size=128,
                         async_finish=False,
                         return_recv_hook=False,
                         **unmapped,
@@ -1870,7 +1871,7 @@ def install() -> None:
                                 num_max_dispatch_tokens_per_rank,
                                 num_experts,
                                 quant_type=3 if use_ue8m0 else 2,
-                                quant_group_size=128,
+                                quant_group_size=quant_group_size,
                                 fp8_round_scale=bool(round_scale),
                                 async_finish=async_finish,
                                 return_recv_hook=return_recv_hook,
@@ -3003,6 +3004,17 @@ def install() -> None:
         except Exception:
             logging.getLogger("hcu.adapter").warning(
                 "HCU adapter: DSV4 CT scale loader not installed", exc_info=True,
+            )
+
+        # HYV4 load_weights renames every .weight_scale to fp8 _inv; CT int8
+        # keeps .weight_scale. Class-local loader wrapper, no source writes.
+        try:
+            from hcu_adapter import hyv4_ct_scale_patch
+
+            hyv4_ct_scale_patch.install()
+        except Exception:
+            logging.getLogger("hcu.adapter").warning(
+                "HCU adapter: HYV4 CT scale naming not installed", exc_info=True,
             )
 
         # Import quantization only after operator/vendor setup. The original

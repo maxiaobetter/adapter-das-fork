@@ -44,6 +44,8 @@ def _synthetic(root):
         for needle, _ in module._PATCHES:
             add("csrc/" + module._RELPATH, needle)
     add("csrc/" + jit_concat_mla._RELPATH, jit_concat_mla._DLDEVICE_NEEDLE)
+    add("csrc/" + jit_concat_mla._RELPATH, jit_concat_mla._Q_KERNEL_NEEDLE)
+    add("csrc/" + jit_concat_mla._RELPATH, jit_concat_mla._Q_LAUNCH_NEEDLE)
     add("csrc/" + jit_ptgq._RELPATH, jit_ptgq._NEEDLE)
     for name, pairs in jit_dpskmeta._PATCHES.items():
         for needle, _ in pairs:
@@ -71,6 +73,28 @@ def _git(tree, *args):
     return subprocess.check_output([
         "git", "-c", f"safe.directory={tree}", "-C", str(tree), *args,
     ])
+
+
+def test_per_token_fp8_conversion_is_staged_for_both_kernel_paths(tmp_path):
+    from hcu_adapter import jit_quant_fp8
+
+    root = tmp_path / "community" / "jit"
+    root.mkdir(parents=True)
+    _synthetic(root)
+    path = root / "csrc/gemm/per_token_quant_fp8.cuh"
+    # CTA and warp implementations have the same output store expression.
+    path.write_text(jit_quant_fp8._NEEDLE_TOKEN_INCLUDE + "\n" +
+                    (jit_quant_fp8._NEEDLE_TOKEN_CVT + "\n" +
+                     "scale = maximum" + jit_quant_fp8._NEEDLE_TOKEN_SCALE + ";\n") * 2)
+    before = _snapshot(root)
+    bundle, _ = bridge.prepare(root, tmp_path / "cache")
+    transformed = (bundle / "csrc/gemm/per_token_quant_fp8.cuh").read_text()
+    assert transformed.count(jit_quant_fp8._REPL_TOKEN_CVT) == 2
+    assert transformed.count(jit_quant_fp8._REPL_TOKEN_SCALE) == 2
+    assert jit_quant_fp8._NEEDLE_TOKEN_CVT not in transformed
+    assert transformed.count("#include <hip/hip_fp8.h>") == 1
+    assert transformed.index("<hip/hip_runtime.h>") < transformed.index("<hip/hip_fp8.h>")
+    assert _snapshot(root) == before
 
 
 @pytest.fixture(params=["offline", "community-git"])
@@ -113,6 +137,11 @@ def test_complete_bundle_preserves_sources_and_all_transforms(source, tmp_path):
     warp = (bundle / "include/sgl_kernel/warp.cuh").read_text()
     assert "T _v;" in warp and "__hip_bfloat162 _v;" not in warp
     assert "__shfl_up_sync(active_mask" not in warp
+    from hcu_adapter import jit_concat_mla
+
+    concat = (bundle / "csrc" / jit_concat_mla._RELPATH).read_text()
+    assert jit_concat_mla._NATIVE_Q_KERNEL in concat
+    assert jit_concat_mla._NATIVE_Q_LAUNCH in concat
     assert (bundle / "cuda-headers/cuda_fp8.h").is_file()
     for primitive in ("load", "store", "scan"):
         body = (bundle / f"cuda-headers/cub/block/block_{primitive}.cuh").read_text()

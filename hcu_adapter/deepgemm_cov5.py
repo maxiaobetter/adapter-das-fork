@@ -8,12 +8,10 @@ Its native INT8/packed-INT4 kernel replaces one low-level call; checkpoint
 loading, quantization, scales and every other DeepGEMM operator stay native.
 """
 
-import hashlib
 import importlib
 from importlib import metadata, util
 import inspect
 import logging
-from pathlib import Path
 
 from . import registry
 
@@ -21,7 +19,6 @@ from . import registry
 MODULE = "hcu_deepgemm_w4a8_cov5"
 SOURCE_COMMIT = "b061ec70272a001fca622ea814d3ee163e24bb05"
 WHEEL_VERSION = "2.1.0+dtk2610.torch2110.2611031138.gb061ec"
-WRAPPER_SHA256 = "854157c0752eac436e9cfb31b2896dba7c9d5baecc3bfa8bbe745bc63b5df6e4"
 LOG = logging.getLogger("hcu.adapter")
 
 
@@ -75,8 +72,6 @@ def install():
     if (
         list(inspect.signature(function).parameters)
         != ["a", "b", "output", "m_indices", "config"]
-        or hashlib.sha256(Path(inspect.getfile(function)).read_bytes()).hexdigest()
-        != WRAPPER_SHA256
         or namespace.get("op") is not vendor.op
         or namespace.get("DEFAULT_W4A8_CONTIG_CONFIG") != {"MODE": 1006}
     ):

@@ -136,6 +136,8 @@ BACKEND_CATALOG = {
                               "-> (out, ..); plain rmsnorm only"},
             "lightop": {"status": "candidate",
                         "note": "Public BF16 plain RMSNorm; other dtypes/Gemma use Triton"},
+            "lightop_opt": {"status": "candidate",
+                            "note": "LightOp op.rms_norm_opt(out,x,w,eps); native GLM53 FP8 decode profile provider; numerical/graph validation pending"},
             "torch": {"status": "production",
                       "note": "reference path"},
         },
@@ -145,6 +147,8 @@ BACKEND_CATALOG = {
         "summary": "residual += input; input = rmsnorm(residual)*w, in-place",
         "backends": {
             "triton": {"status": "production", "note": "default (auto)"},
+            "lightop_opt": {"status": "candidate",
+                            "note": "LightOp op.fused_add_rms_norm_opt(x,residual,w,eps); provider errors propagate; numerical/graph validation pending"},
             "lightop": {"status": "validated",
                         "note": "lightop.fused_add_rms_norm(x, residual, w, "
                                 "eps, limit=-1) in-place; gemma variant "
