@@ -35,6 +35,7 @@ def gemm_nt(lhs, rhs, out):
         return None
 
     # Use the reference Triton kernel without its M-dependent tuner.
+    # JIT 唯一实现：使用未经过形状调优分发的 Triton kernel。
     from sglang.kernels.ops.gemm.fp8_kernel import _w8a8_block_fp8_matmul
 
     block_m, block_n = 32, 64

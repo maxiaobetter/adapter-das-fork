@@ -14,6 +14,7 @@ def install():
     if torch.version.hip is None:
         return
 
+    # 替代档: 保留此模块的原始 mHC 分发与配置检查。
     from sglang.kernels.ops.layernorm import mhc
     from sglang.srt.models import glm5_next
 

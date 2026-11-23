@@ -1,6 +1,6 @@
 # 算子档位矩阵（自动生成，勿手改）
 
-> 生成：`python tools/gen_tier_matrix.py`（最近 2026-11-18）；事实源 = `BACKEND_CATALOG`（hcu_adapter/hcu_config.py）。
+> 生成：`python tools/gen_tier_matrix.py`（最近 2026-11-23）；事实源 = `BACKEND_CATALOG`（hcu_adapter/hcu_config.py）。
 > L0 `impl-naming` 做新鲜度校验改表须随 catalog 同 commit（governance §3b）。
 > 文件命名导航规则见 governance §3b；缺档 = 该行空白——那是实现排期的直接输入。
 
@@ -279,6 +279,56 @@ TP all-reduce (+fused AR+RMSNorm seam, HCU_AR_NORM_IMPL)
 | nccl | production fallback (HCU_AITER_AR=0); graph-cor |
 
 路由变量：`1`/`0`
+
+## kda_projection
+
+Batch-invariant unquantized GLM-5.3 KDA projections
+
+| 档位 | 状态 / 备注 |
+|---|---|
+| fixed_tile | candidate Fixed BF16 Triton GEMM tile on HIP,  |
+
+路由变量：`1`
+
+## dsa_short_topk
+
+Logical-order DSA kpool short prefill selection
+
+| 档位 | 状态 / 备注 |
+|---|---|
+| ordered | candidate Emit all valid short-context indices |
+
+路由变量：`1`
+
+## glm_mhc_stats
+
+Batch-invariant FP32 statistics for GLM mHC
+
+| 档位 | 状态 / 备注 |
+|---|---|
+| fixed_stats | candidate Fixed IEEE FP32 tiles for the Torch  |
+
+路由变量：`1`
+
+## glm_eagle_projections
+
+Batch-invariant GLM EAGLE normalization and LM-head projections
+
+| 档位 | 状态 / 备注 |
+|---|---|
+| fixed | candidate Row-wise FP32 RMS statistics and fix |
+
+路由变量：`1`
+
+## glm_mla_matmul
+
+Batch-invariant zero-RoPE MLA matrix contractions
+
+| 档位 | 状态 / 备注 |
+|---|---|
+| fixed | candidate Fixed BF16 projections and IEEE FP32 |
+
+路由变量：`1`
 
 ## kda_prefill
 
