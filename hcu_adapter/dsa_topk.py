@@ -10,6 +10,8 @@ same contract (values in [-inf-masked windows]; -1 padding for short rows;
 paged transform gathers the page_size=1 table).
 """
 
+from functools import wraps
+
 import torch
 
 
@@ -80,3 +82,40 @@ def install():
     sgl_kernel.fast_topk_transform_fused = fast_topk_transform_fused
     sgl_kernel.fast_topk_transform_ragged_fused = fast_topk_transform_ragged_fused
     sgl_kernel.fast_topk_v2 = fast_topk_v2
+
+
+def install_ordered_short_kpool():
+    if torch.version.hip is None:
+        return
+
+    from sglang.srt.environ import envs
+    from sglang.srt.layers.attention.dsa.dsa_indexer_kpool import IndexerKPool
+
+    from . import registry
+
+    original = IndexerKPool._full_topk_for_short_sequence
+    if getattr(original, "_hcu_ordered_short_kpool", False):
+        return
+
+    @wraps(original)
+    def ordered_short_topk(self, metadata, device):
+        if envs.SGLANG_DSA_FUSE_TOPK.get() and not metadata.force_unfused_topk:
+            return original(self, metadata, device)
+
+        # This path skips logits because every logical token fits in the
+        # selection budget. Match the native selector's sequence order.
+        lengths = metadata.get_seqlens_expanded()
+        columns = torch.arange(
+            self.index_topk + self.index_kpool - 1, dtype=torch.int32, device=device
+        )
+        valid = (columns < self.index_topk) & (columns < lengths[:, None])
+        return torch.where(valid, columns, -1)
+
+    ordered_short_topk._hcu_ordered_short_kpool = True
+    registry.register(
+        "dsa_short_topk", ordered_short_topk,
+        target=f"{IndexerKPool.__module__}:IndexerKPool._full_topk_for_short_sequence",
+        mechanism=registry.MECH_SEAM,
+        detail="Emit the complete short kpool context in logical token order on HIP",
+    )
+    IndexerKPool._full_topk_for_short_sequence = ordered_short_topk

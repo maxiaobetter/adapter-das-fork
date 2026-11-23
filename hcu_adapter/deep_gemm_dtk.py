@@ -292,6 +292,13 @@ def install():
         getattr(shim, "fp8_gemm_nt", None) is None
         and getattr(deepgemm, "fp8_gemm", None) is not None
     ):
+        from .hcu_env import enabled
+
+        fixed_dense_gemm = None
+        if enabled("HCU_FIXED_BLOCK_FP8_DENSE"):
+            from .dense_block_fp8 import gemm_nt
+
+            fixed_dense_gemm = gemm_nt
 
         def _fp8_gemm_nt(lhs, rhs, out, **_unknown):
             if _unknown:
@@ -299,6 +306,10 @@ def install():
                     f"fp8_gemm_nt dequant wrapper: unexpected kwargs "
                     f"{sorted(_unknown)}"
                 )
+            if fixed_dense_gemm is not None:
+                result = fixed_dense_gemm(lhs, rhs, out)
+                if result is not None:
+                    return result
             return fp8_gemm_nt_dequant(lhs, rhs, out)
 
         shim.fp8_gemm_nt = _fp8_gemm_nt

@@ -819,6 +819,7 @@ def chunk_kda_fwd_kernel_intra_sub_chunk(
     BK: tl.constexpr,
     IS_VARLEN: tl.constexpr,
     USE_GATHER: tl.constexpr,
+    FIXED_GATE_ANCHOR: tl.constexpr,
 ):
     i_t, i_i, i_bh = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     i_b, i_h = i_bh // H, i_bh % H
@@ -861,13 +862,14 @@ def chunk_kda_fwd_kernel_intra_sub_chunk(
     b_g = tl.load(p_g, boundary_check=(0, 1))
     b_beta = tl.load(p_beta, boundary_check=(0,))
 
-    if USE_GATHER:
-        b_gn = gather(
-            b_g, tl.full([1, BK], min(BC // 2, T - i_ti - 1), dtype=tl.int16), axis=0
-        )
+    if FIXED_GATE_ANCHOR:
+        gate_anchor = 0
     else:
-        # calculate offset
-        p_gn = g + (i_ti + min(BC // 2, T - i_ti - 1)) * H * K + tl.arange(0, BK)
+        gate_anchor = min(BC // 2, T - i_ti - 1)
+    if USE_GATHER:
+        b_gn = gather(b_g, tl.full([1, BK], gate_anchor, dtype=tl.int16), axis=0)
+    else:
+        p_gn = g + (i_ti + gate_anchor) * H * K + tl.arange(0, BK)
         b_gn = tl.load(p_gn, mask=tl.arange(0, BK) < K, other=0.0)
         b_gn = b_gn[None, :]
 
@@ -928,6 +930,7 @@ def chunk_kda_fwd_intra(
     disable_recompute: bool = False,
     fuse_recompute: bool = False,
     fuse_diagonal: bool = False,
+    fixed_gate_anchor: bool = False,
 ):
     B, T, H, K = k.shape
     V = v.shape[-1]
@@ -967,6 +970,7 @@ def chunk_kda_fwd_intra(
                 BC=BC,
                 BK=BK,
                 USE_GATHER=is_gather_supported,
+                FIXED_GATE_ANCHOR=fixed_gate_anchor,
             )
         else:
             Aqk, Akkd = chunk_kda_fwd_intra_token_parallel(

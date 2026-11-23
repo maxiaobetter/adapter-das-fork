@@ -25,8 +25,10 @@ from hcu_adapter.fla_hcu.op import exp, log
 from hcu_adapter.fla_hcu.utils import (
     check_shared_mem,
 )
+from hcu_adapter.hcu_env import enabled
 
 BS_LIST = [32, 64] if check_shared_mem() else [16, 32]
+_FIXED_SAFE_GATE_ANCHOR = enabled("HCU_KDA_FIXED_SAFE_GATE_ANCHOR")
 
 
 def cdiv(a: int, b: int) -> int:
@@ -699,22 +701,6 @@ def softplus_fwd(x):
     return tl.where(x < 20.0, log(1.0 + exp(x)), x)
 
 
-@triton.heuristics(
-    {
-        "HAS_BIAS": lambda args: args["dt_bias"] is not None,
-        "HAS_SCALE": lambda args: args["scale"] is not None,
-        "IS_VARLEN": lambda args: args["cu_seqlens"] is not None,
-        "USE_LOWER_BOUND": lambda args: args["lower_bound"] is not None,
-    }
-)
-@triton.autotune(
-    configs=[
-        triton.Config({"BS": BS}, num_warps=num_warps)
-        for BS in BS_LIST
-        for num_warps in [2, 4, 8]
-    ],
-    key=["H", "S", "BT", "IS_VARLEN"],
-)
 @triton.jit(do_not_specialize=["T"])
 def kda_gate_chunk_cumsum_vector_kernel(
     s,
@@ -797,6 +783,28 @@ def kda_gate_chunk_cumsum_vector_kernel(
     tl.store(p_o, b_o.to(p_o.dtype.element_ty), boundary_check=(0, 1))
 
 
+_kda_gate_chunk_cumsum_vector_jit = kda_gate_chunk_cumsum_vector_kernel
+kda_gate_chunk_cumsum_vector_kernel = (
+    triton.heuristics(
+        {
+            "HAS_BIAS": lambda args: args["dt_bias"] is not None,
+            "HAS_SCALE": lambda args: args["scale"] is not None,
+            "IS_VARLEN": lambda args: args["cu_seqlens"] is not None,
+            "USE_LOWER_BOUND": lambda args: args["lower_bound"] is not None,
+        }
+    )(
+        triton.autotune(
+            configs=[
+                triton.Config({"BS": BS}, num_warps=num_warps)
+                for BS in BS_LIST
+                for num_warps in [2, 4, 8]
+            ],
+            key=["H", "S", "BT", "IS_VARLEN"],
+        )(_kda_gate_chunk_cumsum_vector_jit)
+    )
+)
+
+
 def kda_gate_chunk_cumsum(
     g: torch.Tensor,
     A_log: torch.Tensor,
@@ -847,6 +855,25 @@ def kda_gate_chunk_cumsum(
 
     def grid(meta):
         return (cdiv(meta["S"], meta["BS"]), NT, B * H)
+
+    if (
+        _FIXED_SAFE_GATE_ANCHOR
+        and cu_seqlens is not None
+        and A_log is not None
+        and lower_bound is not None
+        and -5.0 <= lower_bound <= 0.0
+        and BT == 64
+        and S == 128
+    ):
+        # Wave counts change the rounding of the cumulative sum. Pin the
+        # launch used by the common gfx938 configuration for this gate shape.
+        _kda_gate_chunk_cumsum_vector_jit[(cdiv(S, 16), NT, B * H)](
+            g_org, A_log, dt_bias, g, scale, cu_seqlens, chunk_indices,
+            lower_bound, T, H, S, BT, 16,
+            HAS_BIAS=dt_bias is not None, HAS_SCALE=scale is not None,
+            IS_VARLEN=True, USE_LOWER_BOUND=True, num_warps=8,
+        )
+        return g
 
     kda_gate_chunk_cumsum_vector_kernel[grid](
         s=g_org,
@@ -929,6 +956,14 @@ def chunk_kda_fwd(
     # Accuracy A/B against the H100 reference, which uses separate diagonal,
     # solve, and recompute kernels rather than the small-grid fused path.
     _small_grid = False
+    # The 16-token diagonal tile has at most 15 gate increments. A bound
+    # of -5 keeps the fixed first-row anchor inside the FP32 exp range.
+    fixed_gate_anchor = (
+        _FIXED_SAFE_GATE_ANCHOR
+        and A_log is not None
+        and lower_bound is not None
+        and -5.0 <= lower_bound <= 0.0
+    )
     w, u, _, kg, Aqk, _ = chunk_kda_fwd_intra(
         q=q,
         k=k,
@@ -942,6 +977,7 @@ def chunk_kda_fwd(
         safe_gate=lower_bound is not None,
         fuse_diagonal=_small_grid,
         fuse_recompute=_small_grid,
+        fixed_gate_anchor=fixed_gate_anchor,
     )
 
     h, v_new = chunk_gated_delta_rule_fwd_h(

@@ -1849,6 +1849,11 @@ def install() -> None:
                     exc_info=True,
                 )
 
+        if _he and _he.enabled("HCU_ORDERED_TP8_BF16_REDUCE"):
+            from hcu_adapter import sglang_allreduce
+
+            sglang_allreduce.install_ordered_tp_reduce()
+
         # gfx936-class HCUs have no fp8 matrix unit and the DTK aiter MQA-logits
         # kernels hard-gate on gfx942/950: emulate paged/ragged fp8 MQA logits in
         # torch (dequant -> bf16 GEMM, fp32 scales). Legacy page_size=1 only.
@@ -2876,6 +2881,10 @@ def install() -> None:
         #      tilelang is hip-gated off).
         if os.environ.get("HCU_MHC_UNFUSE", "1") == "1" and torch.version.hip:
             os.environ["SGLANG_OPT_FUSE_MHC_POST_PRE"] = "false"
+            # The platform seam can hide HIP from mHC's backend checks. On
+            # gfx938 the TileLang pre kernel splits a wave64 at lane 32.
+            os.environ.setdefault("SGLANG_OPT_USE_TILELANG_MHC_PRE", "false")
+            os.environ.setdefault("SGLANG_OPT_USE_TILELANG_MHC_POST", "false")
             # stdout stays protocol-clean for pytest-xdist/execnet
             # workers; loud notices belong on stderr.
             import sys as _sys
@@ -3337,3 +3346,28 @@ def install() -> None:
             logging.getLogger("hcu.adapter").warning(
                 "HCU adapter: QSA pool not installed", exc_info=True
             )
+
+        if _he and _he.enabled("HCU_GLM53_FIXED_KDA_PROJECTION"):
+            from hcu_adapter import sglang_kda_invariant_projection
+
+            sglang_kda_invariant_projection.install()
+
+        if _he and _he.enabled("HCU_DSA_ORDERED_SHORT_TOPK"):
+            from hcu_adapter import dsa_topk
+
+            dsa_topk.install_ordered_short_kpool()
+
+        if _he and _he.enabled("HCU_GLM53_FIXED_MHC_STATS"):
+            from hcu_adapter import sglang_mhc_invariant_stats
+
+            sglang_mhc_invariant_stats.install()
+
+        if _he and _he.enabled("HCU_GLM53_FIXED_EAGLE_PROJECTIONS"):
+            from hcu_adapter import sglang_glm53_invariant_eagle
+
+            sglang_glm53_invariant_eagle.install()
+
+        if _he and _he.enabled("HCU_GLM53_FIXED_DSA_MATMUL"):
+            from hcu_adapter import sglang_glm53_invariant_mla
+
+            sglang_glm53_invariant_mla.install()

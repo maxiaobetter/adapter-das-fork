@@ -658,6 +658,38 @@ REGISTRY = {
                  "stock=官方 v0.5.21 内核（gfx938 Aqk 全错，gate 测试红常驻）。"
                  "旧键 HCU_KDA_PREFILL_EMU=1 等价本键 =emu",
     },
+    "HCU_KDA_FIXED_SAFE_GATE_ANCHOR": {
+        "env": "HCU_KDA_FIXED_SAFE_GATE_ANCHOR", "default": "0",
+        "about": "Pin the safe-gate KDA diagonal anchor and the validated 64x128 gate cumsum launch for lower bounds from -5 to 0.",
+    },
+    "HCU_FIXED_BLOCK_FP8_DENSE": {
+        "env": "HCU_FIXED_BLOCK_FP8_DENSE", "default": "0",
+        "about": "Use fixed GEMM tiles for dense E4M3 with 128x128 weight blocks and FP32 scales on HIP.",
+    },
+    "HCU_DSA_ORDERED_SHORT_TOPK": {
+        "env": "HCU_DSA_ORDERED_SHORT_TOPK", "default": "0",
+        "about": "Emit the full unfused DSA kpool prefill shortlist in logical token order.",
+    },
+    "HCU_GLM53_FIXED_MHC_STATS": {
+        "env": "HCU_GLM53_FIXED_MHC_STATS", "default": "0",
+        "about": "Use fixed FP32 mix statistics for the unfused GLM mHC boundary on HIP.",
+    },
+    "HCU_GLM53_FIXED_EAGLE_PROJECTIONS": {
+        "env": "HCU_GLM53_FIXED_EAGLE_PROJECTIONS", "default": "0",
+        "about": "Use row-wise EH RMSNorm and fixed BF16 LM-head tiles for GLM EAGLE on HIP.",
+    },
+    "HCU_GLM53_FIXED_DSA_MATMUL": {
+        "env": "HCU_GLM53_FIXED_DSA_MATMUL", "default": "0",
+        "about": "Use fixed BF16 absorption and IEEE FP32 attention tiles in zero-RoPE MLA.",
+    },
+    "HCU_GLM53_FIXED_KDA_PROJECTION": {
+        "env": "HCU_GLM53_FIXED_KDA_PROJECTION", "default": "0",
+        "about": "Use fixed GEMM tiles for unquantized BF16 fused GLM-5.3 KDA projections.",
+    },
+    "HCU_ORDERED_TP8_BF16_REDUCE": {
+        "env": "HCU_ORDERED_TP8_BF16_REDUCE", "default": "0",
+        "about": "Use a fixed accumulation order for in-place BF16 reductions on 8-rank TP groups. Requires disabled custom all-reduce.",
+    },
     "HCU_CONV1D_IMPL": {
         "env": "HCU_CONV1D_IMPL", "default": "fork",
         "about": "KDA causal_conv1d_fn（prefill varlen）+ causal_conv1d_update"
@@ -711,8 +743,9 @@ REGISTRY = {
                  "triton fused mhc_post_pre，实测（HCU_DUMP_MHC dump 对拍）其"
                  "FFN 段 h_post 与 _mhc_pre_torch 参考在相同输入下 z 偏移"
                  "+0.5~+5——每层污染残差流，即 GLM-5.3-Flash 词汤主病灶。"
-                 "关融合后走 hc_post+hc_ffn_pre 纯 torch 链（HCU 上 aiter 需 "
-                 "gfx950、tilelang 被 not is_hip 挡）。=0 恢复融合快路",
+                 "默认同时关闭 TileLang pre/post，避免平台兼容层遮蔽 HIP 判定"
+                 "后进入 gfx938 不支持的内核。显式 pre/post 设置仍优先。"
+                 "=0 交回上游分发",
     },
     # debug dumps (see skills/hcu-adapter-dev/references/precision-triage.md)
     "HCU_DUMP_LAYERS": {"env": "HCU_DUMP_LAYERS", "default": "0",
