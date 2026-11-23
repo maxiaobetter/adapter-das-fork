@@ -15,7 +15,16 @@ case "${DETERMINISTIC:=1}" in
     0|1) ;;
     *) printf 'DETERMINISTIC must be 0 or 1\n' >&2; exit 2 ;;
 esac
-adapter_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+if [[ -n "${ADAPTER_CHECKOUT:-}" ]]; then
+    adapter_dir="$(cd -- "$ADAPTER_CHECKOUT" && pwd -P)"
+else
+    adapter_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+fi
+if [[ ! -d "$adapter_dir/hcu_adapter" ]]; then
+    printf 'Set ADAPTER_CHECKOUT to the adapter repository root
+' >&2
+    exit 2
+fi
 if [[ ! -r "$SGLANG_CHECKOUT/python/sglang/launch_server.py" || ! -r "$MODEL_PATH/config.json" ]]; then
     printf 'Check SGLANG_CHECKOUT and MODEL_PATH\n' >&2
     exit 2
