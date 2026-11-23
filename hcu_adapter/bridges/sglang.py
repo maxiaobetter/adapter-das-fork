@@ -2881,10 +2881,6 @@ def install() -> None:
         #      tilelang is hip-gated off).
         if os.environ.get("HCU_MHC_UNFUSE", "1") == "1" and torch.version.hip:
             os.environ["SGLANG_OPT_FUSE_MHC_POST_PRE"] = "false"
-            # The platform seam can hide HIP from mHC's backend checks. On
-            # gfx938 the TileLang pre kernel splits a wave64 at lane 32.
-            os.environ.setdefault("SGLANG_OPT_USE_TILELANG_MHC_PRE", "false")
-            os.environ.setdefault("SGLANG_OPT_USE_TILELANG_MHC_POST", "false")
             # stdout stays protocol-clean for pytest-xdist/execnet
             # workers; loud notices belong on stderr.
             import sys as _sys

@@ -29,3 +29,5 @@ python3 compare_workloads.py results/baseline results/candidate
 ```
 
 跨 batch 验收使用 greedy 和固定 seed 42，逐条对比输出 token、验证轮数、接受草稿数和提出草稿数。正式比较同时检查两组请求的 `cached_tokens`。
+
+验收确定性候选时，可在两条跨 batch 命令中加 `--require-deterministic`。输出 token 或 MTP 计数不一致会保留原始结果并返回非零状态。

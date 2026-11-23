@@ -254,6 +254,7 @@ def cross_batch(server, output):
                                 'tokens_equal': expected['output_ids'] == row['output_ids'],
                                 'accept_counts': comparisons, 'response': row})
         write(output / 'gsm8k-cross-batch.json', results)
+    return results
 
 
 def main():
@@ -263,6 +264,7 @@ def main():
     parser.add_argument('--port', type=int, required=True)
     parser.add_argument('--dataset', type=Path)
     parser.add_argument('--capture-graph-buffers', action='store_true')
+    parser.add_argument('--require-deterministic', action='store_true')
     parser.add_argument('--sample-size', type=int, default=64)
     parser.add_argument('--concurrencies', type=int, nargs='+', choices=(1, 2, 4), default=(1, 2, 4))
     parser.add_argument('--perf-repetitions', type=int, default=5)
@@ -279,7 +281,16 @@ def main():
         assert args.dataset is not None
         accuracy(server, args.output, args.dataset, args.sample_size)
     else:
-        cross_batch(server, args.output)
+        comparisons = cross_batch(server, args.output)
+        if args.require_deterministic and (
+            not comparisons or any(
+                not row['tokens_equal'] or any(
+                    a is None or a != b for a, b in row['accept_counts'].values()
+                )
+                for row in comparisons
+            )
+        ):
+            raise SystemExit('Cross-batch output tokens or MTP counters differ; see gsm8k-cross-batch.json')
 
 
 if __name__ == '__main__':

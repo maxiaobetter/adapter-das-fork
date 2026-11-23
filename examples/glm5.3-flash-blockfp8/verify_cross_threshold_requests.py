@@ -20,6 +20,7 @@ def main():
     p.add_argument("--dataset-reference", type=Path, required=True)
     p.add_argument("--call-reference", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument('--require-deterministic', action='store_true')
     args = p.parse_args()
     match = json.loads(args.dataset_reference.read_text())["rows"]
     row = next(r for r in match if r["dataset_index"] == 51)
@@ -35,6 +36,8 @@ def main():
     }
     evidence = {}
     expected = None
+    expected_counts = None
+    count_names = ("spec_verify_ct", "spec_num_correct_drafts", "spec_num_proposed_drafts")
     for label, (prompts, index) in cases.items():
         server.flush()
         with server.post("/generate", {
@@ -48,13 +51,22 @@ def main():
         assert len(actual) == len(prompts) and not any(r["meta_info"]["cached_tokens"] for r in actual)
         r = actual[index]
         assert r["prompt_token_ids"] == anchor
+        counts = tuple(r["meta_info"].get(name) for name in count_names)
         if expected is None:
             expected = r["output_ids"]
+            expected_counts = counts
         evidence[label] = {"batch_input_lengths": list(map(len, prompts)),
                            "first_change": first_change(expected, r["output_ids"]),
+                           "mtp_counts_equal": None not in counts and counts == expected_counts,
                            "result": r}
         write(args.output, evidence)
-        print(label, "first change", evidence[label]["first_change"], flush=True)
+        print(label, "first change", evidence[label]["first_change"],
+              "MTP counts equal", evidence[label]["mtp_counts_equal"], flush=True)
+    if args.require_deterministic and any(
+        row["first_change"] is not None or not row["mtp_counts_equal"]
+        for row in evidence.values()
+    ):
+        raise SystemExit("Cross-threshold output tokens or MTP counters differ; see the output JSON")
 
 
 if __name__ == "__main__":

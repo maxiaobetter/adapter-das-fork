@@ -743,8 +743,6 @@ REGISTRY = {
                  "triton fused mhc_post_pre，实测（HCU_DUMP_MHC dump 对拍）其"
                  "FFN 段 h_post 与 _mhc_pre_torch 参考在相同输入下 z 偏移"
                  "+0.5~+5——每层污染残差流，即 GLM-5.3-Flash 词汤主病灶。"
-                 "默认同时关闭 TileLang pre/post，避免平台兼容层遮蔽 HIP 判定"
-                 "后进入 gfx938 不支持的内核。显式 pre/post 设置仍优先。"
                  "=0 交回上游分发",
     },
     # debug dumps (see skills/hcu-adapter-dev/references/precision-triage.md)
