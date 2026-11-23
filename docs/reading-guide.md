@@ -3,11 +3,11 @@
 > 目标：任何会话（人或 AI 助手）接手本仓工作时，按本页顺序读 5 份文件
 > 就能不迷糊地干活。每份文档的一句话定位 + 何时必读。
 >
-> **宿主纪律**：本仓同时服务 **sglang 与 vLLM 两个宿主**（`HCU_ADAPTER_HOST`
-> 分发）。公共机制、公共不变量一律用"宿主"指称（= sglang 或 vLLM）；
+> **宿主纪律**：本仓同时服务 **SGLang、vLLM 与 DeepInfer 三个宿主**（`HCU_ADAPTER_HOST`
+> 分发）。公共机制、公共不变量一律用"宿主"指称（SGLang、vLLM 或 DeepInfer）；
 > 只在某宿主成立的内容必须显式特指（如 `bridges/sglang.py`、影子包
 > `sgl_kernel/` 属 sglang 进程，`bridges/vllm.py`、HcuPlatform 属 vLLM
-> 进程）。改文档时先问一句：这段在另一个宿主上成立吗？成立→写宿主；
+> 进程；`bridges/deepinfer.py` 属 DeepInfer）。改文档时先核对适用宿主；
 > 不成立→写明哪个宿主、差异是什么。
 
 ## 按任务找文档（30 秒路由）
@@ -35,6 +35,8 @@
 | 按测试治理路线开工 / 查依赖和验收 | docs/test-route-implementation-plan.md → 对应 MR 段的依赖、DoD 与验收命令 |
 | 判断一项工作归哪仓 / 开发插件新能力 | docs/governance.md §0 判别 → 本文「姊妹仓地图」→ sglang-plugin-das docs/ |
 
+文件职责与代码整理先读 [architecture §7](architecture.md#文件职责与整理顺序)；算子归属和迁移证据要求以 governance 为准，历史验证结论不随目录迁移自动继承。
+
 MiniMax-H3专用RoPE候选的接口、快关、CPU/离线编译证据与设备验收边界见 [MiniMax-H3](minimax-h3.md)。
 
 ## 算子目录入口
@@ -56,7 +58,7 @@ DeepInfer 的具体文件位置见[算子导航](frameworks/deepinfer-kernels.md
 | docs/hygon-oss-landscape.md | HYGON-AI 组织开源库图谱：vendor 档能力源归属、协作边界、SkillHub 技能（按季核对） | 库清单与组织页不符 / vendor wheel 换代未同步 vendor-kernels |
 | docs/image-dtk2610.md | DTK 26.10/py3.12 基础镜像 pip 态部署：装/不装清单、三 wheel 顺序、五自检、[VERIFY] 销项表 | 上游 pyproject 依赖变更未同步 / VERIFY 项未销 |
 | docs/architecture.md | 分层机制：影子库/is_cuda 语义路由/三档路由/横向机制（配 architecture.html 一页图） | §3 图与 `hcu_adapter/` 目录结构不符 |
-| **docs/governance.md** | **治理宪法**：双仓边界（adapter=行为还原 / plugin 独立仓=性能新能力）、seam→rebind→text-patch 裁决链、active-ref 角色、运行时注册表与 dump、plugin 接入时序 / 双宿主共建 / 维护闭环（§7） | 与 ci/l0_gate.py 三规则或 `hcu_adapter/registry.py` 行为不符 |
+| **docs/governance.md** | **治理宪法**：双仓边界（adapter=行为还原 / plugin 独立仓=性能新能力）、seam→rebind→text-patch 裁决链、active-ref 角色、运行时注册表与 dump、plugin 接入时序 / 双宿主共建 / 维护闭环（§7） | 与 ci/l0_gate.py 三规则或 `hcu_adapter/infra/registry.py` 行为不符 |
 | docs/ci.md | CI 当前分层与实测账：L0 → L1/L1.5 GPU → L2 扩展验证（含双线三绑定铁律） | GATES 列表与 l1_gpu_gate.sh 不符 |
 | docs/l15-test-inventory.md | L1.5 v2 逐文件候选账：分类、logical op、路由证据、纳入/排除和晋级条件 | 上游版本变更、nodeid 漂移或 manifest 已更新但清单未同步 |
 | docs/l15-family-matrix.md | L1.5 Dense/MLA/MoE/量化/Mamba 五类无权重代表行为矩阵、runner 和 DoD | 固定 case、上游 exact nodeid 或 family 边界与实际执行不符 |
@@ -99,7 +101,7 @@ DeepInfer 的具体文件位置见[算子导航](frameworks/deepinfer-kernels.md
 
 | 文档 | adapter-das（本仓） | sglang-plugin-das |
 |---|---|---|
-| architecture.md | 机制分层：影子库 / is_cuda 语义 / 三档路由 / 桥结构 | 插件架构 + 未来运行时目录规划 |
+| architecture.md | 机制分层：影子库 / is_cuda 语义 / 三档路由 / 桥结构 | 插件架构 + 当前运行时职责与整理边界 |
 | governance.md | 治理宪法：双仓判别（真相源）、裁决链、§7 共建 | 组合兼容契约：目标所有权、验证矩阵 |
 | bootstrap.md | **宿主**新容器部署手册（依赖钉 / tvm-ffi 预热 / 自检） | 方法库开发环境准备 |
 | ci.md | L0/L1/L2 宿主门禁体系 | 方法仓 CI 阶段约束 |
@@ -142,3 +144,6 @@ moe_align capture 崩（527ad97）。金索引法：docs/models.md 备注列 + c
 
 
 vLLM 0.33 mHC 行为适配候选：`docs/frameworks/vllm033-mhc.md`；数学委托官方 Torch，公开 OOT 注册归宿主桥，post/head 保留，完整四维及模型门禁未闭合。
+## GLM-5.3 Flash 交接
+
+模型候选源码与未完成验证见 [GLM-5.3 Flash 交接](glm5.3-flash-handoff.md)。
