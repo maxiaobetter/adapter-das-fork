@@ -59,6 +59,7 @@ bridge 负责上游接口接线，catalog 记录实际绑定入口；模型策�
 | mtp | `mtp_emu.py`、`mtp_triton.py` | 按原函数拆分 Torch 运算与提案写入 Triton 内核；未引入新融合 |
 | state_and_constraints | `state_and_constraints_emu.py`、`state_and_constraints_triton.py` | Torch 状态搬运/诊断与 Triton mask 分开 |
 | vision | `vision_emu.py`、`vision_triton.py` | Torch embedding/downsample 与带 Triton 归一化的图像打包分开 |
+| ViT attention | `vision_attention_emu.py`、`vision_attention_triton.py`、`fa_varlen_triton.py` | 默认 Torch，可选 Triton，复用 packed varlen 内核 |
 | index_ops 内计算 | `index_ops_emu.py`、`index_ops_triton.py` | 单档位实现；`index_ops.py` 仅保留实际后端选择 |
 | fused_transform 内单档位 helper | `kv_cache_emu.py`、`rope_emu.py`、`rope_lightop.py` | KV 数值实现及 RoPE 计算归档；组合执行和 plugin 接点留在原门面 |
 | gemm、gather、norm、fused_transform | 原文件保留 | 门面：实际校验、分发或按原阶段组织执行，不是旧路径薄转发 |

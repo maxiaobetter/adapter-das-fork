@@ -32,7 +32,12 @@ BACKEND_CATALOG = {'deep_ep.BucketBuffer': {'rccl': {'status': 'candidate',
                                                          'limitations': 'Pinned ViT noncausal varlen Q/K/V '
                                                                         'call; bounded FP32 query tiles; '
                                                                         'numerical/graph/model qualification '
-                                                                        'pending'}},
+                                                                        'pending'},
+                                             'triton': {'status': 'candidate',
+                                                        'implementation': 'hcu_adapter.kernels.vision_attention_triton.flash_attn_fwd',
+                                                        'limitations': 'Explicit noncausal packed BF16/FP16 ViT; '
+                                                                       'shared FP32 varlen attention; '
+                                                                       'DeepInfer GPU/Graph/model qualification pending'}},
  'deep_ep.EngramBuffer': {'rccl_gpu': {'status': 'candidate',
                                        'implementation': 'hcu_adapter.kernels.deepep_dtk.EngramBuffer',
                                        'limitations': 'GPU tables, eager, byte-exact collective lookup; no '

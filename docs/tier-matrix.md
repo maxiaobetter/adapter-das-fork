@@ -1281,6 +1281,7 @@ flash_attn.cute.interface._flash_attn_fwd
 
 | 档位 | 状态 / 备注 |
 |---|---|
+| triton | candidate Explicit noncausal packed BF16/FP16  |
 | torch | candidate Pinned ViT noncausal varlen Q/K/V ca |
 
 路由变量：（auto）
