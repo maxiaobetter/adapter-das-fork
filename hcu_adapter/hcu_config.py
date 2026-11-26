@@ -180,6 +180,8 @@ BACKEND_CATALOG = {
                               "-> (out, ..); plain rmsnorm only"},
             "lightop": {"status": "candidate",
                         "note": "Public BF16 plain RMSNorm; other dtypes/Gemma use Triton"},
+            "lightop_opt": {"status": "candidate",
+                            "note": "LightOp op.rms_norm_opt for BF16 plain RMSNorm"},
             "torch": {"status": "production",
                       "note": "reference path"},
         },
@@ -197,6 +199,8 @@ BACKEND_CATALOG = {
                                 "py3.10 wheel has both fns too); perf 0.76x "
                                 "vs triton @4096x7168 bf16 — triton stays "
                                 "default; one-strike fallback on a raise"},
+            "lightop_opt": {"status": "candidate",
+                            "note": "LightOp op.fused_add_rms_norm_opt; provider errors propagate"},
             "torch": {"status": "production",
                       "note": "reference path"},
         },

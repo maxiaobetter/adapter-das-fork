@@ -443,18 +443,18 @@ REGISTRY = {
     },
     "HCU_RMS_NORM_IMPL": {
         "env": "HCU_RMS_NORM_IMPL", "default": "triton",
-        "about": "rms_norm 后端档位：triton|aiter(rmsnorm_forward 桥)|lightop|torch；"
-                 "lightop 仅覆盖 BF16 plain RMSNorm，其他 dtype 使用 triton；"
+        "about": "rms_norm 后端档位：triton|aiter(rmsnorm_forward 桥)|lightop|lightop_opt|torch；"
+                 "lightop 和 lightop_opt 覆盖 BF16 plain RMSNorm，其他 dtype 使用 triton；"
                  "仅管 plain rmsnorm，fused_add/gemma 变体见 "
                  "HCU_FUSED_ADD_RMS_IMPL",
     },
     "HCU_FUSED_ADD_RMS_IMPL": {
         "env": "HCU_FUSED_ADD_RMS_IMPL", "default": "auto",
         "about": "fused_add_rmsnorm/gemma 变体后端档位：auto=triton（lightop "
-                 "过验证后转正），triton|lightop|torch；lightop="
+                 "过验证后转正），triton|lightop|lightop_opt|torch；lightop="
                  "lightop.fused_add_rms_norm/gemma_fused_add_rmsnorm 原地核"
                  "（fp32 累加、末端舍入，同 triton 数值契约；一次异常即降级 "
-                 "triton）",
+                 "triton）；显式 lightop_opt 调用 op.fused_add_rms_norm_opt，透传后端异常",
     },
     "HCU_FUSED_MOE_IMPL": {
         "env": "HCU_FUSED_MOE_IMPL", "default": "auto",

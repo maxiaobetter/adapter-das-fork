@@ -40,8 +40,10 @@ def _resolve_rms_impl():
         try:
             from hcu_adapter import hcu_env
 
-            impl, _src = hcu_env.resolve("HCU_RMS_NORM_IMPL")
+            impl, source = hcu_env.resolve("HCU_RMS_NORM_IMPL")
             if impl in ("triton", "aiter", "lightop", "torch"):
+                _RMS_IMPL = impl
+            elif impl == "lightop_opt" and source in ("explicit", "config"):
                 _RMS_IMPL = impl
         except Exception:
             import traceback
@@ -61,12 +63,18 @@ def _resolve_fused_add_impl():
     (same policy as HCU_SILU_MUL_IMPL)."""
     global _FUSED_ADD_IMPL, _LIGHTOP_FUSED_ADD
     if _FUSED_ADD_IMPL is None:
-        _FUSED_ADD_IMPL = "triton"
+        explicit_opt = False
         try:
             from hcu_adapter import hcu_env
 
-            impl, _src = hcu_env.resolve("HCU_FUSED_ADD_RMS_IMPL")
-            if impl == "lightop":
+            impl, source = hcu_env.resolve("HCU_FUSED_ADD_RMS_IMPL")
+            explicit_opt = impl == "lightop_opt" and source in ("explicit", "config")
+            if explicit_opt:
+                from lightop import gemma_fused_add_rmsnorm, op
+
+                _LIGHTOP_FUSED_ADD = (op.fused_add_rms_norm_opt, gemma_fused_add_rmsnorm)
+                _FUSED_ADD_IMPL = impl
+            elif impl == "lightop":
                 from lightop import fused_add_rms_norm, gemma_fused_add_rmsnorm
 
                 _LIGHTOP_FUSED_ADD = (fused_add_rms_norm, gemma_fused_add_rmsnorm)
@@ -74,11 +82,15 @@ def _resolve_fused_add_impl():
             elif impl in ("triton", "torch"):
                 _FUSED_ADD_IMPL = impl
         except Exception:
+            if explicit_opt:
+                raise
             # visibility beats silence: a silent vendor-probe failure reads
             # as "auto mode" and hides a real wheel/env problem.
             import traceback
 
             traceback.print_exc()
+        if _FUSED_ADD_IMPL is None:
+            _FUSED_ADD_IMPL = "triton"
     return _FUSED_ADD_IMPL
 
 
@@ -109,6 +121,8 @@ def _try_lightop_fused_add(input, residual, weight, eps, gemma):
            weight, eps)
         return True
     except Exception:
+        if _FUSED_ADD_IMPL == "lightop_opt":
+            raise
         import traceback
 
         traceback.print_exc()
@@ -144,7 +158,10 @@ def _lightop_rmsnorm(input, weight, eps, out):
         return out
     x = input.contiguous().view(-1, input.shape[-1])
     y = out.contiguous().view_as(x)
-    lightop.rms_norm(x, weight.contiguous(), eps, out=y)
+    if _RMS_IMPL == "lightop_opt":
+        lightop.op.rms_norm_opt(y, x, weight.contiguous(), eps)
+    else:
+        lightop.rms_norm(x, weight.contiguous(), eps, out=y)
     if y.data_ptr() != out.data_ptr():
         out.copy_(y.view_as(out))
     return out
@@ -264,7 +281,7 @@ def _do_rmsnorm(
         impl = "triton"  # vendor backend covers the plain norm only
     if impl == "torch" or not input.is_cuda:
         return _rmsnorm_native(input, weight, eps, gemma, out)
-    if impl == "lightop":
+    if impl in ("lightop", "lightop_opt"):
         # Only the BF16 plain-norm contract has been qualified with this provider.
         # Other dtypes and Gemma retain the existing Triton implementation.
         if input.dtype == weight.dtype == out.dtype == torch.bfloat16:
@@ -353,7 +370,9 @@ def _do_fused_add(
     gemma: bool,
 ) -> None:
     impl = _resolve_fused_add_impl()
-    if impl == "lightop" and _try_lightop_fused_add(input, residual, weight, eps, gemma):
+    if impl in ("lightop", "lightop_opt") and _try_lightop_fused_add(
+        input, residual, weight, eps, gemma
+    ):
         return
     use_triton = (
         impl != "torch"
