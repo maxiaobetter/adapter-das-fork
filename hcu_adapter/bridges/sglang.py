@@ -1401,9 +1401,12 @@ def install() -> None:
             os.environ.get("HCU_SLIMQUANT", "1") != "0"
         if _sq_on:
             try:
-                from hcu_adapter import slimquant as _slimquant
+                from hcu_adapter.slimquant_provider import activate_legacy_slimquant
 
-                _slimquant.activate()
+                if not activate_legacy_slimquant():
+                    logging.getLogger("hcu.adapter").info(
+                        "HCU SlimQuant provider: enabled hcu plugin; legacy adapter provider skipped"
+                    )
             except Exception:
                 logging.getLogger("hcu.adapter").warning(
                     "HCU adapter: slimquant bridge not installed", exc_info=True
