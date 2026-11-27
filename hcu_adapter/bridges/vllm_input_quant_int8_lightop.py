@@ -73,7 +73,11 @@ captures and inputs outside the LightOp contract.
 Known limits (validate in the service, do not treat as proven)
 --------------------------------------------------------------
 * The `ones(hidden)` smooth factor is cached by device, stream and hidden
-  width. Compilation uses the native op. Eligible graph capture can use a
+  width. Compiled dynamic symmetric BF16 quantization uses an opaque output
+  mutation: gfx936 executes LightOp; other architectures execute the original
+  Core dynamic quant operator with the same output allocations. Architecture
+  is checked only in concrete execution, never during registration or tracing.
+  Eligible graph capture can use a
   warmed stream factor or allocate a graph-local factor without publishing it
   into the eager cache. Set HCU_LIGHTOP_PER_TOKEN_INT8_GRAPH=0 to use the native
   op in capture.
@@ -119,6 +123,7 @@ _ATEXIT_ARMED = False
 _SMOOTH: dict[tuple, torch.Tensor] = {}
 _OP = None
 _BINDING = None
+_COMPILED_OP = None
 
 
 def _bump(reason: str) -> int:
@@ -247,14 +252,87 @@ def _ineligible(x, scale, azp, symmetric):
     return None
 
 
+def _compiled_eligible(x, scale, azp, symmetric):
+    """Dynamo-safe metadata admission; concrete pointer/device checks stay opaque."""
+    return (
+        scale is None
+        and azp is None
+        and symmetric
+        and isinstance(x, torch.Tensor)
+        and x.dim() == 2
+        and x.dtype == torch.bfloat16
+        and x.is_cuda
+        and x.is_contiguous()
+        and 0 < x.shape[-1] <= _MAX_HIDDEN
+        and x.shape[-1] % _VEC == 0
+        and x.shape[0] > 0
+    )
+
+
+def _compiled_quant_op():
+    """Register a CPU-only opaque boundary without querying or initializing CUDA."""
+    global _COMPILED_OP
+    if _COMPILED_OP is not None:
+        return _COMPILED_OP
+
+    def dispatch(output, input, scales):
+        architecture = str(
+            getattr(torch.cuda.get_device_properties(input.device), "gcnArchName", "")
+        ).split(":", 1)[0]
+        if (architecture == "gfx936"
+                and _ineligible(input, None, None, True) is None
+                and _execution_fallback(input) is None):
+            hidden = int(input.shape[-1])
+            if torch.cuda.is_current_stream_capturing():
+                stream = _current_stream_id(input.device)
+                smooth = _SMOOTH.get((input.device.index, stream, hidden))
+                if smooth is None:
+                    smooth = torch.ones(
+                        hidden, device=input.device, dtype=torch.float32
+                    )
+            else:
+                smooth = _smooth_scale(hidden, input.device)
+            # Native failures propagate, including outside capture. A broken
+            # gfx936 execution must not silently fall back to a gfx938-only DSO.
+            _lightop_op()(output, input, scales, smooth, False, -1.0)
+        else:
+            # Preserve the exact Core operator and the wrapper's allocations on
+            # gfx938 and every unsupported concrete execution contract.
+            torch.ops._C.dynamic_scaled_int8_quant(
+                output, input.contiguous(), scales, None
+            )
+
+    def fake(output, input, scales):
+        return None
+
+    op = torch.library.custom_op(
+        "hcu_adapter::vllm_lightop_compiled_int8_quant", dispatch,
+        mutates_args=("output", "scales"),
+        schema="(Tensor(a!) output, Tensor input, Tensor(b!) scales) -> ()",
+    )
+    op.register_fake(fake)
+    _COMPILED_OP = op
+    return op
+
+
 def _wrap(original):
     """Build the replacement around the captured upstream function."""
 
     graph_enabled = os.getenv(_GRAPH_ENV, "1") == "1"
+    compiled_quant = _compiled_quant_op() if graph_enabled else None
 
     @functools.wraps(original)
     def scaled_int8_quant(input, scale=None, azp=None, symmetric=True):
         if torch.compiler.is_compiling():
+            if compiled_quant is not None and _compiled_eligible(
+                input, scale, azp, symmetric):
+                quantized = torch.empty_like(input, dtype=torch.int8)
+                scales = torch.empty(
+                    (input.numel() // input.shape[-1], 1),
+                    device=input.device, dtype=torch.float32,
+                )
+                compiled_quant(quantized, input, scales)
+                return quantized, scales, None
             return original(input, scale, azp, symmetric)
         reason = _ineligible(input, scale, azp, symmetric)
         if reason is None:

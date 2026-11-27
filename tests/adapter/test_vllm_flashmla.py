@@ -73,9 +73,17 @@ def test_kill_vetoes_before_import_or_signature(setup, monkeypatch, choice):
     assert registry.get(bridge.OP) is None
 
 
-def test_native_preserves_original_and_registers(setup, monkeypatch):
-    bridge, target, _, _ = setup
-    monkeypatch.setenv(bridge.MODE_VARIABLE, 'native')
+@pytest.mark.parametrize('extended_provider', [False, True])
+def test_native_preserves_original_and_registers(setup, monkeypatch, extended_provider):
+    bridge, target, vendor, _ = setup
+    if extended_provider:
+        def provider_with_optional_parameters(q, kv, indices, sm_scale, d_v=512,
+                                              attn_sink=None, topk_length=None, v=None,
+                                              *, q_scale=None, k_scale=None, v_scale=None):
+            raise AssertionError('CPU bridge tests must not launch vendor')
+        vendor.flash_mla_sparse_fwd = provider_with_optional_parameters
+    else:
+        monkeypatch.setenv(bridge.MODE_VARIABLE, 'native')
     from hcu_adapter.kernels import mla_sparse_prefill_dtk
     seen = []
     monkeypatch.setattr(mla_sparse_prefill_dtk, 'try_prefill', lambda **kw: seen.append(kw) or False)
@@ -96,7 +104,25 @@ def test_native_preserves_original_and_registers(setup, monkeypatch):
     monkeypatch.setattr(bridge, 'selected_mode', lambda: policy_lookup.append(True) or 'native')
     assert target.rocm_sparse_attn_prefill(*range(10)) == 'stock'
     assert not policy_lookup
-    assert seen[0]['provider'] is provider
+    assert seen[0]['provider'] is vendor.flash_mla_sparse_fwd
+
+
+def test_vendor_rejects_required_extra_argument(setup, monkeypatch):
+    bridge, target, vendor, _ = setup
+
+    def provider_with_required_argument(q, kv, indices, sm_scale, d_v=512,
+                                        attn_sink=None, topk_length=None, *, q_scale):
+        pytest.fail('must not execute an incompatible vendor function')
+
+    vendor.flash_mla_sparse_fwd = provider_with_required_argument
+    with pytest.raises(bridge.FlashMLACompatibilityError, match='ABI changed'):
+        bridge._native_provider()
+    assert bridge.install() is False
+    monkeypatch.setenv(bridge.MODE_VARIABLE, 'native')
+    with pytest.raises(bridge.FlashMLACompatibilityError):
+        bridge.install()
+    assert target.rocm_sparse_attn_prefill is official
+    assert registry.get(bridge.OP) is None
 
 
 @pytest.mark.parametrize('kind', ['missing', 'extra', 'default', 'keyword_only'])

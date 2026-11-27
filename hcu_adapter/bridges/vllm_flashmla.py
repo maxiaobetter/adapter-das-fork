@@ -82,15 +82,19 @@ def _refuse(reason, error=None):
     raise FlashMLACompatibilityError(_failure) from error
 
 
-def _require_signature(function, names, defaults):
+def _require_signature(function, names, defaults, *, allow_optional_tail=False):
     try:
         parameters = tuple(inspect.signature(function).parameters.values())
     except (TypeError, ValueError) as error:
         raise FlashMLACompatibilityError('cannot inspect FlashMLA prefill ABI') from error
-    if (tuple(p.name for p in parameters) != names
+    prefix = parameters[:len(names)]
+    tail = parameters[len(names):]
+    if (tuple(p.name for p in prefix) != names
             or any(p.kind != inspect.Parameter.POSITIONAL_OR_KEYWORD
                    or p.default != defaults.get(p.name, inspect.Parameter.empty)
-                   for p in parameters)):
+                   for p in prefix)
+            or (tail and (not allow_optional_tail
+                          or any(p.default is inspect.Parameter.empty for p in tail)))):
         raise FlashMLACompatibilityError('FlashMLA prefill ABI changed: ' + function.__name__)
 
 
@@ -119,7 +123,8 @@ def _native_provider():
     provider = import_module('flash_mla.flash_mla_interface').flash_mla_sparse_fwd
     _require_signature(provider, ('q', 'kv', 'indices', 'sm_scale', 'd_v',
                                  'attn_sink', 'topk_length'),
-                       {'d_v': 512, 'attn_sink': None, 'topk_length': None})
+                       {'d_v': 512, 'attn_sink': None, 'topk_length': None},
+                       allow_optional_tail=True)
     return provider
 
 
@@ -183,8 +188,8 @@ def install():
             provider = _native_provider()
         except (ImportError, AttributeError) as error:
             raise FlashMLACompatibilityError('native FlashMLA prefill explicitly requested but unavailable') from error
-        # The DTK 35220f1 Python entry accepts seven positional arguments;
-        # this path does not use DeepInfer's optional FP32 API or its pins.
+        # The BF16 path passes the original seven arguments. Newer vendor
+        # versions also accept optional arguments for other input formats.
         from hcu_adapter.kernels.mla_sparse_prefill_dtk import try_prefill
 
         def dispatch(q, kv, indices, topk_length, scale, head_dim, nope_head_dim,

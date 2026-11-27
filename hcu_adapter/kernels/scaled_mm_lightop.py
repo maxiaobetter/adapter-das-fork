@@ -20,6 +20,12 @@ def supported(A, B, As, Bs, out_dtype, bias, architecture):
         return False
     m, k = A.shape
     n = B.shape[1]
+    # Installed channelwise Lt can return True after status 6 and leave the
+    # output unwritten for these independently reproduced INT8 geometries.
+    # Retain the official provider instead of trusting that success boolean.
+    if (architecture == 'gfx938' and A.dtype == torch.int8 and m in (112, 128)
+            and n == 6144 and k in (3072, 6144, 8192, 12288)):
+        return False
     if not m or not n or not k or k != B.shape[0] or k % 16 or n % 16:
         return False
     if not A.is_cuda or B.device != A.device or not A.is_contiguous() or not B.t().is_contiguous():

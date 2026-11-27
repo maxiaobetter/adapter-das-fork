@@ -43,6 +43,9 @@ kernel/provider import；named consumer 回归不得冒称 SGLang engine 试验�
 
 vLLM 启动编排测试应显式隔离当前所有 provider 的安装边界（包括 MiniMax
 ABI），并断言顺序；遗漏新 owner 会让 CPU 顺序测试意外导入真实设备路径。
+`test_vllm_required_startup.py` 的 required-only 环境注册表只用于启动策略与
+日志断言；dense/sparse FlashMLA、PCP 等无关 owner 的 install 和健康查询均须
+在夹具内隔离，避免真实 backend 发布及其快关读取污染后续参数用例。
 组合健康测试使用真实 `ProcessLocalActions`，逐个覆盖内建 owner 的失败短路、
 激活期间的暂缓聚合及返回后的完整检查；同时验证已锁存的宿主错误在激活仍
 进行时也先拒绝。不要用缺少生命周期接口的 `SimpleNamespace` 或全局健康
@@ -1157,3 +1160,14 @@ including a zero-length padded row. N=128 also covers first-call auto capture.
 An explicit low-free-memory skip is a resource condition, not device qualification;
 only executed cases count as numerical evidence.
 
+
+### SGLang Hook 别名 CPU 扫描
+
+`tests/adapter/test_hook_aliases.py` 覆盖真实 HookRegistry、已缓存的
+`_apply_target`、类替换顺序、classmethod/staticmethod、改名别名、
+新模块/新别名、自定义 getter/setter 和命名空间、异常传播、源码漂移、
+关闭回退、缺少原生构建条件及缓存哈希校验。原生用例必须确认辅助扩展已加载；
+不支持平台或缺少编译条件应显式 skip，不能以官方回退通过冒称原生路径通过。
+性能比较还须核对完整 Hook 应用集合，并记录无采样服务就绪总耗时及输出检查。
+组合优化证据与最新基点迁移后的验收分别记录，见
+`docs/sglang-startup-hook-aliases.md`。

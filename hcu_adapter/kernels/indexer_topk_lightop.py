@@ -136,3 +136,97 @@ def select_topk(logits, starts, ends, k, *, valid_lengths=None):
     _topk_native_output[(rows,)](logits, indices, starts, ends, out,
         width, logits.stride(0), k, num_warps=4)
     return out
+
+
+@triton.jit
+def _indexpool_top511_output(X, Indices, Lengths, Out,
+                            WIDTH: tl.constexpr, XROW: tl.constexpr):
+    row = tl.program_id(0).to(tl.int64)
+    lane = tl.arange(0, 512)
+    idx = tl.load(Indices + row * 512 + lane)
+    length = tl.load(Lengths + row)
+    in_prefix = (idx >= 0) & (idx < WIDTH) & (idx < length)
+    value = tl.load(X + row * XROW + idx.to(tl.int64), in_prefix,
+                    other=-float('inf'))
+    valid = in_prefix & (value != -float('inf'))
+    bits = value.to(tl.uint32, bitcast=True)
+    key = tl.where((bits & 0x80000000) != 0, ~bits, bits ^ 0x80000000)
+    # Match FP32 comparisons: signed zeros tie, and NaNs precede +inf.
+    key = tl.where((bits & 0x7fffffff) == 0, 0x80000000, key)
+    key = tl.where((bits & 0x7fffffff) > 0x7f800000, 0xffffffff, key).to(tl.uint32)
+    # Native output is unordered. Retain complete FP32 rank and choose lower
+    # logical IDs at equal scores before dropping the worst of512 candidates.
+    packed = (key.to(tl.uint64) << 32) | (~idx.to(tl.uint32)).to(tl.uint64)
+    ranked = tl.sort(tl.where(valid, packed, 0), descending=True)
+    selected = (~(ranked & 0xffffffff).to(tl.uint32)).to(tl.int32)
+    keep = (lane < 511) & ((ranked >> 32) != 0)
+    ordered = tl.sort(tl.where(keep, selected, 2147483647), descending=False)
+    tl.store(Out + row * 511 + lane,
+             tl.where(ordered == 2147483647, -1, ordered), lane < 511)
+
+
+
+def _indexpool_supported_device(index):
+    """Flash-only gfx93680 qualification; generic TopK unchanged."""
+    props = torch.cuda.get_device_properties(index)
+    return (getattr(props, 'gcnArchName', '').split(':')[0] == 'gfx936'
+            and props.multi_processor_count == 80) or _supported_device(index)
+
+
+def select_indexpool_groups(logits, upper, budget):
+    """Candidate exact-rank Top511 from current causal score prefixes.
+
+    This uses public native Top512 plus score-aware511 selection and ascending
+    logical IDs/-1 padding. The postprocessor orders ties by lower ID within
+    the native candidate pool; boundary membership remains vendor-dependent
+    and needs qualification against the original Torch route.
+    ``HCU_DISABLE_OPS=hy4_indexpool_topk`` restores the caller's Torch path.
+    Existing generic/DSV41 TopK and paged-score padding policies are unchanged.
+    """
+    from hcu_adapter.infra.kill_switch import op_disabled
+
+    if op_disabled('hy4_indexpool_topk'):
+        return None
+    if (budget != 511 or torch.version.hip is None or not logits.is_cuda
+            or logits.ndim != 2 or logits.dtype != torch.float32
+            or logits.stride(1) != 1 or logits.shape[0] <= 0
+            or not 0 < logits.shape[1] < 2**31
+            or logits.stride(0) < logits.shape[1]
+            or upper.shape != logits.shape[:1]
+            or upper.dtype not in (torch.int32, torch.int64)
+            or upper.device != logits.device or not upper.is_contiguous()
+            or any(t.is_neg() for t in (logits, upper))):
+        return None
+    if not _indexpool_supported_device(logits.device.index):
+        return None
+    from importlib import import_module
+    from hcu_adapter._base import Missing
+
+    try:
+        module = import_module('lightop.fuse_topk_transform')
+    except ModuleNotFoundError as error:
+        if error.name not in ('lightop', 'lightop.fuse_topk_transform'):
+            raise
+        return None
+    native = getattr(module, 'topk_transform_ragged_v2', None)
+    if isinstance(native, Missing) or not callable(native):
+        return None
+    rows, width = logits.shape
+    # Underfilled prefixes still use a512-capacity native output. Padding in
+    # this scratch is intentionally unwritten: the ragged API reads lengths.
+    pitch = max(512, triton.cdiv(width, 4) * 4)
+    if rows * pitch >= 2**31:
+        return None
+    lengths = upper.clamp(min=0, max=width).to(torch.int32)
+    scores = torch.empty((rows, pitch), dtype=torch.float32, device=logits.device)
+    offsets = torch.empty_like(lengths)
+    indices = torch.empty((rows, 512), dtype=torch.int32, device=logits.device)
+    output = torch.empty((rows, 511), dtype=torch.int32, device=logits.device)
+    sms = torch.cuda.get_device_properties(logits.device).multi_processor_count
+    _topk_live_scores[(rows, min(triton.cdiv(pitch, 4096), triton.cdiv(sms, rows)))](
+        logits, lengths, scores, offsets,
+        width, pitch, logits.stride(0), 4096, num_warps=4)
+    native(scores, lengths, out_offsets=offsets, out_indices=indices)
+    _indexpool_top511_output[(rows,)](
+        logits, indices, lengths, output, width, logits.stride(0), num_warps=4)
+    return output

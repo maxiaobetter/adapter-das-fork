@@ -41,6 +41,14 @@ dist/hcu_adapter-0.5.22+dtk2610.torch2130.<YYMMDDHHMM>.g<commit6>-py3-none-any.w
 Requires-Dist: sgl-kernel ==0.0.0+dtk2610.torch2130.<同戳>
 ```
 
+HiSparse 构建 helper 必须按当前 checkout 的文件路径加载，不能经已缓存的
+`hcu_adapter` 包名导入：旧安装的 `sitecustomize` 即使在 HOSTnone 下也可能
+预先缓存旧包；只把 checkout 放到 `sys.path` 首位不能改变该包的 `__path__`。
+`setup_hip.py` 与版本 pin 一样从自身目录确定 helper；缺失文件直接失败，
+不回退到旧安装、不清空或重绑全局包缓存。离线回归覆盖 all-ops 与
+`--hisparse-only`、旧包/旧 helper 缓存及缺失 checkout helper；build API doubles
+只证明构建入口的来源与参数，不能替代真实 HIP 编译或配套 wheel 验证。
+
 ## 3. 版本与戳规则
 
 | 项 | 来源 | main 当前值 |
@@ -146,5 +154,6 @@ main 线的 nightly 由
 阶段执行，发布流程不重复）；`workflow_dispatch` 只构建并保留 artifact，
 不推 nightly。workflow 在 DTK 容器里先从 nightly 归档补装 python 侧唯一缺件
 `torch==2.13.0`（其余编译依赖由 build.sh 兜底补装），再跑
-`packaging/build.sh`（native 编译，架构取 `AMDGPU_TARGETS`）；release 线同理：
-workflow 在构建期写入同一个 `DAS_BUILD_STAMP` 后直接上传，不做上传后版本改写。
+`packaging/build.sh`（native 编译，架构取 `AMDGPU_TARGETS`）。打包上源统一由
+main 承担：release 线不自动上源，其 workflow 只在手动 `workflow_dispatch` 时
+按同一套 `DAS_BUILD_STAMP` 戳构建并保留 artifact，不做上传后版本改写。

@@ -1,0 +1,147 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+
+name: Optest
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: '待测 SGLang sf_b075 镜像的完整引用（可信 Harbor，带时间戳）'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate-image:
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    outputs:
+      image: ${{ steps.validate.outputs.image }}
+      pypi_index: ${{ steps.validate.outputs.pypi_index }}
+      pypi_trusted_host: ${{ steps.validate.outputs.pypi_trusted_host }}
+    steps:
+      - name: Validate SGLang image and package index
+        id: validate
+        shell: bash
+        env:
+          REQUESTED_IMAGE: ${{ inputs.image }}
+          PYPI_URL: ${{ vars.PYPI_URL }}
+        run: |
+          allowed='^10[.]16[.]1[.]152:5000/hcu/base_env/sglang:[A-Za-z0-9][A-Za-z0-9_.-]*-sf_b075-[0-9]{8}-[0-9]{4}$'
+          if [[ ! "$REQUESTED_IMAGE" =~ $allowed ]]; then
+            echo "::error::Expected a timestamped SGLang sf_b075 image from 10.16.1.152:5000/hcu/base_env/sglang"
+            exit 1
+          fi
+          pypi_base="${PYPI_URL%/}"
+          pypi_pattern='^(https?)://([a-zA-Z0-9.-]+)(:[0-9]+)?(/[^?#[:space:]]*)?$'
+          if [[ ! "$pypi_base" =~ $pypi_pattern ]]; then
+            echo "::error::PYPI_URL must be the base URL of the configured HTTP or HTTPS package index"
+            exit 1
+          fi
+          printf 'image=%s\npypi_index=%s/nightly/dtk2604/+simple/\n' \
+            "$REQUESTED_IMAGE" "$pypi_base" >> "$GITHUB_OUTPUT"
+          if [[ "${BASH_REMATCH[1]}" == http ]]; then
+            printf 'pypi_trusted_host=%s\n' "${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+          fi
+
+  optest:
+    needs: validate-image
+    runs-on: hygon-bw1100-4card
+    timeout-minutes: 360
+    container:
+      image: ${{ needs.validate-image.outputs.image }}
+    env:
+      OPTEST_PUBLISH_ROOT: /public/ci_resources/op_test_output
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install optest and CInotificate
+        env:
+          PYPI_INDEX_URL: ${{ needs.validate-image.outputs.pypi_index }}
+          PYPI_TRUSTED_HOST: ${{ needs.validate-image.outputs.pypi_trusted_host }}
+          PIP_CONFIG_FILE: /dev/null
+        run: |
+          pip_args=(--index-url "$PYPI_INDEX_URL")
+          if [[ -n "$PYPI_TRUSTED_HOST" ]]; then
+            pip_args+=(--trusted-host "$PYPI_TRUSTED_HOST")
+          fi
+          python3 -m pip --isolated install optest CInotificate "${pip_args[@]}"
+
+      - name: Run operator tests
+        id: tests
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+        run: |
+          set -o pipefail
+          optest --op_name all --test_mode all 2>&1 | tee "$RUNNER_TEMP/optest-console.log"
+
+      - name: Archive operator test logs on failure
+        if: ${{ !cancelled() && steps.tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: optest-failure-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /op_test_log/*/*/acc/*.log
+            /op_test_log/*/*/acc/_FAILED
+            /op_test_log/*/*/per/*.log
+            !/op_test_log/triton/*/per/test-source.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Print failed operator test logs
+        if: ${{ !cancelled() && steps.tests.outcome == 'failure' }}
+        run: |
+          stop_token="$(cat /proc/sys/kernel/random/uuid)"
+          while IFS= read -r reported_path; do
+            log="$(realpath -e -- "$reported_path")" || continue
+            [[ "$log" == /op_test_log/* && -f "$log" ]] || continue
+            printf '::group::%s\n::stop-commands::%s\n' "$log" "$stop_token"
+            cat -- "$log" || true
+            printf '\n::%s::\n::endgroup::\n' "$stop_token"
+          done < <(sed -n 's|^[[:blank:]]*\[FAILED\] log=\(/op_test_log/.*\.log\)[[:space:]]*$|\1|p' \
+            "$RUNNER_TEMP/optest-console.log" | sort -u)
+
+      - name: Publish operator test results
+        id: publish
+        if: ${{ !cancelled() && (steps.tests.outcome == 'success' || steps.tests.outcome == 'failure') }}
+        env:
+          IMAGE_TAG: ${{ needs.validate-image.outputs.image }}
+          OPTEST_OUTCOME: ${{ steps.tests.outcome }}
+          TZ: Asia/Shanghai
+        run: |
+          mountpoint -- "${OPTEST_PUBLISH_ROOT%/*}"
+          mkdir -p -- "$OPTEST_PUBLISH_ROOT"
+          optest --json || echo "::warning::Optest JSON export failed"
+          day="$(date '+%Y-%m-%d')"
+          output_dir="$OPTEST_PUBLISH_ROOT/daily-$day-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          staging="$(mktemp -d "$OPTEST_PUBLISH_ROOT/.optest.XXXXXX")"
+          trap 'rm -rf -- "$staging"' EXIT
+          mkdir -- "$staging/daily"
+          if [ -d /op_test_output ]; then
+            cp -R -- /op_test_output/. "$staging/daily/"
+          fi
+
+          # 同一共享盘上的并发发布按顺序更新 daily 目录和入口页。
+          exec 9>>"$OPTEST_PUBLISH_ROOT/.optest-publish.lock"
+          flock 9
+          python3 ci/publish_optest.py "$staging" "$output_dir"
+
+      - name: Record operator report in DashHub
+        if: ${{ !cancelled() && steps.publish.outcome == 'success' }}
+        env:
+          IMAGE_TAG: ${{ needs.validate-image.outputs.image }}
+          REPORT_URL: ${{ steps.publish.outputs.report_path }}
+        run: |
+          report_stamp="$(TZ=Asia/Shanghai date '+%Y-%m%d-%H%M')"
+          CInotificate --notificate_type op_daily_display --record \
+            --ci_accelerators BW1100 \
+            --report_url "$REPORT_URL" --report_name "SGLang 超节点${report_stamp}算子测试"

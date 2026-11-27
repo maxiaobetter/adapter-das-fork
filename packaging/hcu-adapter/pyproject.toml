@@ -38,7 +38,7 @@ sglang-runtime = [
     "aiohttp",
     "fastapi",
     "uvicorn>=0.51",
-    "sgl-router",
+    "sglang-router",
     "uvloop",
     "watchfiles",
     "pyzmq>=25.1.2",
@@ -175,6 +175,9 @@ py-modules = ["sitecustomize"]
 
 [tool.setuptools.package-dir]
 "" = "../.."
+
+[tool.setuptools.package-data]
+"hcu_adapter.kernels" = ["fp8_scaled_mm_cpp.cpp"]
 
 [tool.setuptools.packages.find]
 where = ["../.."]

@@ -62,6 +62,8 @@ jobs:
             tests/adapter/test_runtime_lifecycle.py \
             tests/adapter/test_fa_vendor_kwargs.py \
             tests/adapter/test_l1_gate_ownership.py \
+            tests/adapter/test_model_suite_g3.py \
+            tests/adapter/test_hook_aliases_layout.py \
             tests/adapter/test_hcu_ci_preflight.py \
             tests/adapter/test_jit_fp8_ffi.py \
             tests/adapter/test_jit_sources.py \

@@ -275,6 +275,11 @@ def require_runtime_healthy() -> None:
     from hcu_adapter.bridges.vllm_flashmla_decode import require_healthy as require_flashmla_decode_healthy
 
     require_flashmla_decode_healthy()
+    from hcu_adapter.bridges.vllm_sparse_flashmla import require_healthy as require_sparse_flashmla_healthy
+
+    require_sparse_flashmla_healthy()
+    from hcu_adapter.features.hy4.pcp_profile import require_healthy as require_hy4_profile_healthy
+    require_hy4_profile_healthy()
     from hcu_adapter.bridges.vllm_pcp import require_healthy as require_pcp_healthy
 
     require_pcp_healthy()
@@ -334,6 +339,60 @@ def install() -> None:
     """Defer vLLM activation to its official plugin discovery lifecycle."""
 
 
+def _rocr_physical_ids(mask: str) -> list[int]:
+    """Resolve ROCr selection tokens into AMD SMI handle indices."""
+    devices = [item.strip() for item in mask.split(",")]
+    if all(item.isdecimal() for item in devices):
+        indices = [int(item) for item in devices]
+    else:
+        import amdsmi
+        from vllm.platforms.rocm import with_amdsmi_context
+
+        @with_amdsmi_context
+        def resolve():
+            handles = amdsmi.amdsmi_get_processor_handles()
+            by_uuid = {}
+            enumerate_gpu = getattr(amdsmi, "amdsmi_get_gpu_enumeration_info", None)
+            for index, handle in enumerate(handles):
+                uuid = None
+                if enumerate_gpu is not None:
+                    try:
+                        uuid = enumerate_gpu(handle).get("hip_uuid")
+                    except amdsmi.AmdSmiException:
+                        pass
+                if not uuid or not uuid.lower().startswith("gpu-"):
+                    try:
+                        serial = amdsmi.amdsmi_get_gpu_asic_info(handle).get("asic_serial")
+                        unique_id = int(serial, 16)
+                    except (amdsmi.AmdSmiException, TypeError, ValueError):
+                        continue
+                    if unique_id == 0:
+                        continue
+                    uuid = f"GPU-{unique_id:016x}"
+                by_uuid.setdefault(uuid.lower(), []).append(index)
+
+            indices = []
+            for item in devices:
+                if item.isdecimal():
+                    indices.append(int(item))
+                    continue
+                token = item.lower()
+                matches = []
+                if token.startswith("gpu-") and 5 <= len(token) <= 20:
+                    for uuid, uuid_indices in by_uuid.items():
+                        if uuid.startswith(token):
+                            matches.extend(uuid_indices)
+                if len(matches) != 1:
+                    raise ValueError(f"ROCR device UUID is missing or ambiguous: {item}")
+                indices.append(matches[0])
+            return indices
+
+        indices = resolve()
+    if len(set(indices)) != len(indices):
+        raise ValueError("ROCR_VISIBLE_DEVICES resolves to duplicate GPU indices")
+    return indices
+
+
 def _hcu_platform_class() -> type:
     """Build the official ROCm-derived platform only when vLLM requests it."""
     existing = globals().get("HcuPlatform")
@@ -346,6 +405,21 @@ def _hcu_platform_class() -> type:
         """Reuse official ROCm behavior under an HCU platform identity."""
 
         device_name = "hcu"
+
+        @classmethod
+        def get_device_uuid(cls, device_id: int = 0) -> str:
+            # Native IPC supplies the current visible device ordinal. SMI
+            # enumerates the unmasked physical GPUs, unlike HIP/HSA.
+            mapper = getattr(cls, "visible_device_id_to_physical_device_id",
+                             cls.device_id_to_physical_device_id)
+            physical = mapper(device_id)
+            rocr = os.environ.get("ROCR_VISIBLE_DEVICES", "")
+            if rocr:
+                devices = _rocr_physical_ids(rocr)
+                if not 0 <= physical < len(devices):
+                    raise ValueError("visible device is outside the ROCR device mapping")
+                physical = devices[physical]
+            return super().get_device_uuid(physical)
 
         @classmethod
         def get_unquantized_aiter_moe_compatibility(cls):
@@ -407,8 +481,10 @@ def _hcu_platform_class() -> type:
         def check_and_update_config(cls, vllm_config) -> None:
             require_runtime_healthy()
             from .vllm_cli import validate_config_switches
+            from hcu_adapter.bridges.vllm_sparse_flashmla import configure_cache_dtype
 
             validate_config_switches(vllm_config)
+            configure_cache_dtype(vllm_config)
             _configure_indexer_kv_dtype(vllm_config)
             # Core validates the effective config and chooses its default worker.
             from hcu_adapter.bridges.vllm_moe_aiter import configure_padding_policy
@@ -467,6 +543,10 @@ def _hcu_platform_class() -> type:
                 _require_flash_capability()
                 # The owner publishes via vLLM's public backend registry.
                 # Official ROCm selection owns class lookup and validation.
+            if selected_backend == AttentionBackendEnum.FLASHMLA_SPARSE:
+                from hcu_adapter.bridges.vllm_sparse_flashmla import require_available
+
+                require_available()
             return super().get_attn_backend_cls(
                 selected_backend,
                 attn_selector_config,
@@ -573,6 +653,9 @@ def hcu_runtime_plugin() -> None:
         from hcu_adapter.bridges.vllm_sparse_indexer import install as install_sparse_indexer
 
         install_sparse_indexer()
+        from hcu_adapter.bridges.vllm_sparse_flashmla import install as install_sparse_flashmla
+
+        install_sparse_flashmla()
         from hcu_adapter.bridges.vllm_flashmla import install as install_flashmla_prefill
 
         install_flashmla_prefill()

@@ -318,6 +318,16 @@ def install() -> None:
         _install_bridge("layer_dump", _he)
 
 
+        # Hook alias propagation optimizer (HCU_HOOK_ALIAS_FAST) -> hcu_adapter/hook_aliases.py
+        try:
+            from hcu_adapter import hook_aliases
+
+            hook_aliases.install()
+        except Exception:
+            logging.getLogger("hcu.adapter").warning(
+                "HCU adapter: Hook alias propagation not installed", exc_info=True,
+            )
+
         # 8. deep_ep API bridge -> hcu_adapter/bridges/sglang_deep_ep.py
         _install_bridge("deep_ep", _he)
 

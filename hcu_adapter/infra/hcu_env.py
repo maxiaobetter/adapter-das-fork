@@ -204,7 +204,7 @@ REGISTRY = {
     "HCU_VLLM_CT_W4A8_IMPL": {
         "env": "HCU_VLLM_CT_W4A8_IMPL", "default": "native",
         "hosts": ("vllm",),
-        "about": "vLLM 0.33 V4.1 CT W4A8 config registration: native or stock; startup only; kill vllm_ct_w4a8 wins",
+        "about": "vLLM 0.33 CT W4A8 config registration bundle: native or stock; startup only; kill vllm_ct_w4a8 wins",
     },
     "HCU_VLLM_PCP_IMPL": {
         "env": "HCU_VLLM_PCP_IMPL", "default": "stock",
@@ -215,6 +215,12 @@ REGISTRY = {
         "env": "HCU_VLLM_PCP_ROPE_IMPL", "default": "auto",
         "hosts": ("vllm",),
         "about": "V4.1 native PCP inverse and query RoPE: auto selects HCU on gfx938, hcu or stock overrides the file; operator kill switches win",
+    },
+    "HCU_HOOK_ALIAS_FAST": {
+        "env": "HCU_HOOK_ALIAS_FAST",
+        "default": "0",
+        "hosts": ("sglang",),
+        "about": "Opt-in CPU-native SGLang Hook alias scan; 0 retains stock",
     },
     "HCU_VLLM_SPARSE_INDEXER_IMPL": {
         "env": "HCU_VLLM_SPARSE_INDEXER_IMPL", "default": "stock",
@@ -311,12 +317,12 @@ REGISTRY = {
     # detectable failure precondition and logs one line when it acts)
     "HCU_NCCL_TOPO_GUARD": {
         "env": "HCU_NCCL_TOPO_GUARD", "default": "1",
-        "about": "NCCL_TOPO_FILE 卡数失配守卫（nccl_topo_guard.py）：镜像预"
+        "about": "NCCL_TOPO_FILE 卡数/本机PCI地址失配守卫（nccl_topo_guard.py）：镜像预"
                  "设全卡拓扑 XML 而可见卡为子集（HIP_VISIBLE_DEVICES=0-3 等）"
                  "时，NCCL 首个集合通信即致命 XGMI 错（could not find GPU "
                  "5000，box16 4-proc 2026-10-25）。守卫数 XML <gpu> 节点 vs "
                  "torch 可见卡数：失配→清空该 env（NCCL 回退 sysfs 自侦，任"
-                 "意子集皆正确）+一行日志；匹配→保留不动；判不了→保留。"
+                 "意子集皆正确）+一行日志；卡数相等时再检查本机PCI地址，外来地址→清空；匹配或判不了→保留。"
                  "=0 关闭（调试层）",
     },
     "HCU_JIT_WATCHDOG": {

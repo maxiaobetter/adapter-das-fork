@@ -47,10 +47,15 @@ def startup(monkeypatch):
     from hcu_adapter.bridges import vllm_scaled_mm
     monkeypatch.setattr(vllm_scaled_mm, "install", lambda: False)
     # These tests exercise required-policy plumbing, not V4.1 bridge policy.
-    # FlashMLA/PCP have their own admission tests and require release/config
-    # context; keep the CPU runtime fixture independent of them.
-    from hcu_adapter.bridges import vllm_flashmla, vllm_flashmla_decode, vllm_pcp
-    for module in (vllm_flashmla, vllm_flashmla_decode, vllm_pcp):
+    # Dense/sparse FlashMLA and PCP have dedicated admission/health tests;
+    # keep this fixture from publishing real backends or reading their policy
+    # through the required-only environment registry used below.
+    from hcu_adapter.bridges import (
+        vllm_flashmla, vllm_flashmla_decode, vllm_pcp, vllm_sparse_flashmla,
+    )
+    for module in (
+        vllm_flashmla, vllm_flashmla_decode, vllm_pcp, vllm_sparse_flashmla,
+    ):
         monkeypatch.setattr(module, "install", lambda: False)
         monkeypatch.setattr(module, "require_healthy", lambda: None, raising=False)
     # AllReduce preparation has dedicated runtime/ABI tests; keep these

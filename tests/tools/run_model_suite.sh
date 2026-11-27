@@ -103,10 +103,40 @@ except Exception as e:
     print("parse-err:", e)'
 }
 
+G3_MAX_TOKENS="${G3_MAX_TOKENS:-2048}"   # room for a thinking model to finish </think> and answer
+
+chat_gate() {  # $1 user message -> chat completion JSON, greedy
+  local msg=${1:?user message}
+  curl -s --max-time 900 http://127.0.0.1:$PORT/v1/chat/completions \
+    -H 'Content-Type: application/json' \
+    -d "{\"model\": \"x\", \"messages\": [{\"role\": \"user\", \"content\": \"$msg\"}], \"max_tokens\": $G3_MAX_TOKENS, \"temperature\": 0}"
+}
+
+answer_gate() {  # stdin: chat completion JSON -> the judged text on one line, then one "META ..." line
+  # The judged text is the answer, i.e. the text after the last </think>. No
+  # <think> at all: the whole content. <think> opened but not closed (the
+  # reply was cut inside the reasoning): nothing -- a gate must not be passed
+  # on reasoning text. The META line says how many tokens were generated and
+  # how the reply ended, so that a cut or failed reply can be told from a
+  # wrong one when reading the result file.
+  python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+    choice = d["choices"][0]
+    text = choice["message"]["content"] or ""
+    meta = "META tokens=%s finish=%s" % (d.get("usage", {}).get("completion_tokens"), choice.get("finish_reason"))
+except Exception as e:
+    sys.stderr.write("parse-err: %s\n" % e); text, meta = "", "META parse-err: %s" % e
+if "<think>" in text and "</think>" not in text:
+    sys.stderr.write("cut inside <think> (%d chars)\n" % len(text)); text = ""
+else:
+    text = text.rsplit("</think>", 1)[-1]
+print(" ".join(text.split())); print(meta)'
+}
+
 judge_model() {  # $1 id, $2 model-path
   local id=$1 name=${2##*/}
   local res=$LOGD/result_$id.txt
-  : > $res
 
   # G1 launch handled by caller; G2 generation
   local short short_out
@@ -120,33 +150,32 @@ judge_model() {  # $1 id, $2 model-path
 
   # G3 precision: two independent semantic anchors via /v1/chat/completions.
   # A single geography answer can pass while a broken decode path stops on
-  # arithmetic, so require both a knowledge and a compositional answer.
-  local chat chat_tail arithmetic arithmetic_tail
-  chat=$(curl -s --max-time 120 http://127.0.0.1:$PORT/v1/chat/completions \
-    -H 'Content-Type: application/json' \
-    -d '{"model": "x", "messages": [{"role": "user", "content": "What is the capital of France? Answer in one word."}], "max_tokens": 16, "temperature": 0}')
-  chat_tail=$(echo "$chat" | python3 -c 'import json,sys
-try:
-    print(json.load(sys.stdin)["choices"][0]["message"]["content"][-80:])
-except Exception as e:
-    print("parse-err:", e)' 2>/dev/null)
-  echo "CHAT: $chat_tail" >> $res
-  arithmetic=$(curl -s --max-time 120 http://127.0.0.1:$PORT/v1/chat/completions \
-    -H 'Content-Type: application/json' \
-    -d '{"model": "x", "messages": [{"role": "user", "content": "A box has 12 apples. Five are removed. How many apples remain? Answer with only the number."}], "max_tokens": 8, "temperature": 0}')
-  arithmetic_tail=$(echo "$arithmetic" | python3 -c 'import json,sys
-try:
-    print(json.load(sys.stdin)["choices"][0]["message"]["content"][-80:])
-except Exception as e:
-    print("parse-err:", e)' 2>/dev/null)
-  echo "ARITHMETIC: $arithmetic_tail" >> $res
-  if echo "$chat" | grep -qi paris && \
-     echo "$arithmetic" | python3 -c 'import json,re,sys
-try:
-    text = json.load(sys.stdin)["choices"][0]["message"]["content"]
-    sys.exit(0 if re.search(r"(?<![0-9])7(?![0-9])", text) else 1)
-except Exception:
-    sys.exit(1)' 2>/dev/null; then
+  # arithmetic, so require both a knowledge and an arithmetic answer.
+  # Thinking models (Qwen3 etc.) open with <think>...</think>: the budget
+  # must let them finish thinking, and only the text after the closing tag
+  # is judged -- the reasoning says "Paris" whether or not an answer
+  # follows (docs/cookbook.md section 4, item 4). With 16 / 8 tokens every
+  # Qwen3 reply was cut inside the reasoning (nightly L2, 2026-11-25).
+  # The arithmetic anchor is a plain sum, not the word problem used before
+  # ("a box has 12 apples, five are removed"): Qwen2.5-0.5B-Instruct
+  # answers that with "12" and stops, whatever the budget (adapter-free HF
+  # reference, first token "1" at 0.38 against "7" at 0.14; bw47
+  # 2026-11-25), so it measured the model rather than the serving path.
+  # answer_gate prints the judged text, then one "META ..." line. The judged
+  # text is on one line, so it is everything but the last line of the output.
+  local chat chat_out chat_text chat_meta arithmetic arithmetic_out arithmetic_text arithmetic_meta
+  chat=$(chat_gate "What is the capital of France? Answer in one word.")
+  chat_out=$(echo "$chat" | answer_gate)
+  chat_text=${chat_out%$'\n'*}; chat_meta=${chat_out##*$'\n'}
+  echo "CHAT: $(printf '%s\n' "$chat_text" | tail -c 240)" >> $res
+  echo "CHAT-META: ${chat_meta#META }" >> $res
+  arithmetic=$(chat_gate "What is 3 plus 4? Answer with only the number.")
+  arithmetic_out=$(echo "$arithmetic" | answer_gate)
+  arithmetic_text=${arithmetic_out%$'\n'*}; arithmetic_meta=${arithmetic_out##*$'\n'}
+  echo "ARITHMETIC: $(printf '%s\n' "$arithmetic_text" | tail -c 240)" >> $res
+  echo "ARITHMETIC-META: ${arithmetic_meta#META }" >> $res
+  if echo "$chat_text" | grep -qi paris && \
+     echo "$arithmetic_text" | grep -qE '(^|[^0-9])7([^0-9]|$)'; then
     echo "G3-precision PASS" >> $res
   else
     echo "G3-precision FAIL" >> $res
@@ -201,11 +230,18 @@ for id in $ITS; do
   done
 
   echo "[suite] [$id] starting (avail=${avail}MiB)"
+  # One fresh result file per model: judge_model appends, so the G1 line
+  # written below has to start from an empty file.
+  : > $LOGD/result_$id.txt
   start_server "$path" "$extra"
   wait_ready 1500
   rc=$?
   if [ $rc -ne 0 ]; then
     echo "$id G1-launch FAIL (wait rc=$rc)" >> $LOGD/result_$id.txt
+    # The end of the launch log travels with the result: the Verdict step
+    # prints result files, so the cause shows up in the job log itself.
+    echo "launch log tail:" >> $LOGD/result_$id.txt
+    tail -n 12 $LOGD/launch_${path##*/}.log >> $LOGD/result_$id.txt 2>/dev/null
     echo "[suite] [$id] LAUNCH FAILED, next"
     continue
   fi

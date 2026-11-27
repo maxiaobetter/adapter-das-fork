@@ -35,10 +35,11 @@ Ops covered (see csrc/ sources for the per-op porting notes):
 import os
 import platform
 import re
+import sys
 from pathlib import Path
 
 import torch
-from setuptools import setup
+from setuptools import Extension, setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 root = Path(__file__).parent.resolve()
@@ -141,7 +142,14 @@ hipcc_flags = [
     "-w",
 ]
 
-ext_modules = [
+ext_modules = [] if "--hisparse-only" in sys.argv else [
+    # Loaded via ctypes, deliberately separate from Torch op registration.
+    Extension(
+        "sgl_kernel.cpu_metadata",
+        sources=["csrc/distributed/cpu_metadata.cc"],
+        language="c++",
+        extra_compile_args=["-O3", "-std=c++17"],
+    ),
     CUDAExtension(
         # sgl_kernel.native_ops, NOT common_ops: same TORCH_LIBRARY
         # namespace, distinct module file — no clash if an official wheel
@@ -155,6 +163,28 @@ ext_modules = [
         py_limited_api=False,
     ),
 ]
+
+# Shared native build toolchain, with an explicit small isolation lane.
+# --hisparse-only is a build command option, not a runtime environment switch.
+def _hisparse_build_module():
+    # An installed sitecustomize may have cached an older hcu_adapter package.
+    # Like _pin_module(), bind build metadata to this checkout, not that cache.
+    import importlib.util
+
+    path = root / "hcu_adapter" / "kernels" / "hisparse_cpp.py"
+    spec = importlib.util.spec_from_file_location("_das_hisparse_build", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+hisparse_ext = _hisparse_build_module().extension(
+    root, libraries=libraries, extra_link_args=extra_link_args)
+if "--hisparse-only" in sys.argv:
+    sys.argv.remove("--hisparse-only")
+    ext_modules = [hisparse_ext]
+else:
+    ext_modules.append(hisparse_ext)
 
 setup(
     name="sgl-kernel",
