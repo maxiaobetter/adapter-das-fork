@@ -433,7 +433,7 @@ REGISTRY = {
     # quantization
     "HCU_SLIMQUANT": {
         "env": "HCU_SLIMQUANT", "default": "1",
-        "about": "slimquant_w4a8 方法注册（按 checkpoint 配置自选）；=0 关闭",
+        "about": "legacy slimquant_w4a8 注册；选中HCU plugin时自动避让；=0 关闭",
     },
     # vendor op backends (替换矩阵档位: auto|triton|lightop|torch)
     "HCU_SILU_MUL_IMPL": {

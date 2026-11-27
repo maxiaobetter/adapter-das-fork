@@ -127,7 +127,7 @@ TP8 INT8 的 `W8A8_SUPPORT_METHODS=2` 由 Plugin 的
 | `HCU_LINEAR_ATTN_GDN_VERIFY` | auto | 已验证的 DTK2610 构建在 gfx936/gfx938 的 packed BF16 H8/HV24、draft4、连续 FP32 state/snapshot 上自动选 AITER Triton。其余契约走上游。 | `triton` 显式回退至上游，`aiter` 手动选择 AITER Triton。`aiter_hip` 显式启用 `aiter.sglang_fused_sigmoid_gating_delta_rule_update`，适用 gfx938、packed TP1 H16/HV48、BF16 QKV、K=V=128、draft4 及连续 FP32 state/snapshot 的 VERIFY。该候选路由的 batch 由输入和状态池决定。其他契约走上游。`HCU_DISABLE_OPS=gdn_verify` 在启动时优先关闭。接线保留原函数对象和缓存别名。provider 执行后的异常直接抛出，避免再次写入快照。 |
 | `HCU_DSA_PRESHUFFLE` | 1 | — | DSA aiter-preshuffle 路径；=0 回 legacy page_size=1 |
 | `HCU_DSA_PAGE_SIZE` | 空 | CLI `--page-size` 等效优先 | DSA page_size 覆盖，须为 index_kpool 倍数 |
-| `HCU_SLIMQUANT` | 1 | —（方法按 checkpoint 的 quantization_config 自选，非该格式则不激活） | slimquant_w4a8 注册；=0 隔离排查用 |
+| `HCU_SLIMQUANT` | 1 | 选中已安装的 HCU plugin 时避让 legacy 注册 | legacy slimquant_w4a8 注册；=0 隔离排查用；[provider 归属](slimquant-provider-ownership.md) |
 | `HCU_RMS_NORM_IMPL` | triton | —（显式选择，通用默认不变） | plain rmsnorm 档位：triton\|aiter(rmsnorm_forward 桥)\|lightop\|lightop_opt\|torch。lightop 使用公共 BF16 RMSNorm，显式 lightop_opt 使用 `lightop.op.rms_norm_opt`。其他 dtype 和 Gemma 使用 Triton；GLM-5.3 配方显式选择 lightop 以对齐原生舍入。residual 变体使用 `HCU_FUSED_ADD_RMS_IMPL`。 |
 | `HCU_FUSED_ADD_RMS_IMPL` | auto | —（lightop 档已过 parity+cuda-graph 门禁 2026-11-03，但 perf 0.76x 慢于 triton——默认保持 auto=triton） | fused_add_rmsnorm/gemma 变体后端档位：=lightop 显式启用 vendor 档（lightop.fused_add_rms_norm/gemma_fused_add_rmsnorm 原地核，fp32 累加同 triton 数值契约，一次异常即降级 triton；A/B：`tests/tools/_lightop_fused_add_ab.py`）。显式 lightop_opt 使用 `lightop.op.fused_add_rms_norm_opt`，透传后端异常。 |
 | `HCU_SILU_MUL_IMPL` | auto | —（auto=triton；lightop 档过契约+图重放压测后 auto 转正） | 及格即转正不让客户改默认值；=lightop 显式启用 vendor 档（A/B：`tests/tools/_lightop_silu_ab.py`） |
